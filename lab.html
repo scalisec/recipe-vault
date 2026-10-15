@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Link lab · Recipe Vault</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&family=Bricolage+Grotesque:wght@600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+<style>
+  #lab { max-width: 760px; margin: 0 auto; padding: 0 16px 60px; }
+  .res { margin-top: 14px; }
+  .res h3 { font-size: 14px; word-break: break-all; margin-bottom: 8px; }
+  .m { border-top: 1px solid var(--line-soft); padding: 10px 0; font-size: 14px; }
+  .m:first-of-type { border-top: 0; }
+  .tag { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; margin-right: 6px; }
+  .tag.good { background: var(--accent-soft); color: var(--accent-ink); }
+  .tag.bad { background: #F6DADA; color: #7A1F1F; }
+  .tag.meh { background: #FBEFD5; color: #6B4A0B; }
+  pre { white-space: pre-wrap; word-break: break-word; margin: 6px 0 0; padding: 10px; background: var(--ground); border-radius: 10px; font: 13px/1.45 ui-monospace, Menlo, Consolas, monospace; max-height: 220px; overflow: auto; }
+</style>
+</head>
+<body>
+<main id="lab">
+  <div class="page-head"><h1 class="display">Link lab</h1><a class="btn small" href="index.html">Back to app</a></div>
+  <div class="stack">
+    <div class="notice">This tests whether a post link can be turned into a caption by asking Meta's public embed service from <b>your own phone</b>. Nothing is saved. Only the links below are sent, and only to Meta.</div>
+    <div class="field">
+      <label for="links">Post links (one per line)</label>
+      <textarea class="textarea" id="links" style="min-height:170px" spellcheck="false"></textarea>
+    </div>
+    <div class="row wrap">
+      <button class="btn primary grow" id="run" style="min-height:52px">Run test</button>
+      <button class="btn grow" id="copy" style="min-height:52px" disabled>Copy report</button>
+    </div>
+    <div id="out"></div>
+    <div class="field" id="repbox" hidden>
+      <label for="report">Report (copy this and send it back)</label>
+      <textarea class="textarea" id="report" readonly style="min-height:200px; font-size:13px"></textarea>
+    </div>
+  </div>
+</main>
+
+<script src="parser.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  var DEFAULT_LINKS = [
+    'https://www.instagram.com/reel/DeOcuyqqGaC/?mdxt=YmUxYmJ2ZnRrbXcy',
+    'https://www.instagram.com/reel/Deezy8NBmzK/?exln=bjBmcmN0N24wMHN3',
+    'https://www.instagram.com/reel/DeAiEKCSJPh/?psln=bGh4Znh1NWUxZ3Q1',
+    'https://www.instagram.com/reel/DeUX8-QI3PM/?mdxt=MWJqc3N2cGJuaDMwOQ==',
+    'https://www.facebook.com/share/r/1CWL4LEJhE/'
+  ];
+
+  var $ = function (id) { return document.getElementById(id); };
+  var report = '';
+
+  function h(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text != null) e.textContent = text;
+    return e;
+  }
+
+  function cleanUrl(u) {
+    try { var x = new URL(u.trim()); x.search = ''; x.hash = ''; return x.toString(); } catch (e) { return ''; }
+  }
+
+  function methodsFor(url) {
+    var enc = encodeURIComponent(url);
+    var host = '';
+    try { host = new URL(url).hostname; } catch (e) { /* ignore */ }
+    if (/instagram\.com$/.test(host)) {
+      return [
+        { name: 'Instagram oEmbed', url: 'https://graph.facebook.com/instagram_oembed?omitscript=true&url=' + enc },
+        { name: 'Instagram oEmbed v23.0', url: 'https://graph.facebook.com/v23.0/instagram_oembed?omitscript=true&url=' + enc }
+      ];
+    }
+    if (/facebook\.com$|fb\.watch$/.test(host)) {
+      return [
+        { name: 'Facebook video oEmbed', url: 'https://graph.facebook.com/oembed_video?omitscript=true&url=' + enc },
+        { name: 'Facebook post oEmbed', url: 'https://graph.facebook.com/oembed_post?omitscript=true&url=' + enc }
+      ];
+    }
+    return [];
+  }
+
+  // Turn the embed HTML Meta returns into plain text, keeping line breaks. The HTML is parsed, never inserted.
+  function captionFromHtml(html) {
+    if (!html) return '';
+    var doc = new DOMParser().parseFromString(html, 'text/html');
+    doc.querySelectorAll('br').forEach(function (b) { b.replaceWith('\n'); });
+    var ps = Array.prototype.slice.call(doc.querySelectorAll('p')).map(function (p) { return (p.textContent || '').trim(); })
+      .filter(function (t) { return t && !/^A post shared by/i.test(t) && !/^View this (post|reel)/i.test(t); });
+    if (ps.length) return ps.join('\n').trim();
+    var t = (doc.body.textContent || '').replace(/View this (post|reel) on (Instagram|Facebook)/ig, '')
+      .split('\n').filter(function (l) { return !/^\s*A post shared by/i.test(l); }).join('\n')
+      .replace(/\n{3,}/g, '\n\n').trim();
+    return t;
+  }
+
+  function timeoutFetch(url, ms) {
+    var ctl = new AbortController();
+    var t = setTimeout(function () { ctl.abort(); }, ms);
+    return fetch(url, { mode: 'cors', credentials: 'omit', referrerPolicy: 'no-referrer', signal: ctl.signal })
+      .finally(function () { clearTimeout(t); });
+  }
+
+  function runMethod(m) {
+    var out = { name: m.name, status: null, error: '', keys: [], caption: '', title: '', author: '', raw: '' };
+    return timeoutFetch(m.url, 15000).then(function (res) {
+      out.status = res.status;
+      return res.text().then(function (txt) {
+        out.raw = txt;
+        var j = null;
+        try { j = JSON.parse(txt); } catch (e) { /* not json */ }
+        if (!res.ok) {
+          out.error = (j && j.error && j.error.message) ? j.error.message : txt.slice(0, 200);
+          return out;
+        }
+        if (j) {
+          out.keys = Object.keys(j);
+          out.title = typeof j.title === 'string' ? j.title : '';
+          out.author = typeof j.author_name === 'string' ? j.author_name : '';
+          var fromHtml = captionFromHtml(typeof j.html === 'string' ? j.html : '');
+          out.caption = fromHtml.length >= out.title.length ? fromHtml : out.title;
+        }
+        return out;
+      });
+    }).catch(function (e) {
+      out.error = (e && e.name === 'AbortError') ? 'Timed out after 15 seconds' : 'Blocked by the browser (no cross-origin permission) or no connection';
+      out.blocked = true;
+      return out;
+    });
+  }
+
+  function seq(items, fn) {
+    var results = [];
+    return items.reduce(function (p, it) {
+      return p.then(function () { return fn(it).then(function (r) { results.push(r); }); });
+    }, Promise.resolve()).then(function () { return results; });
+  }
+
+  function verdict(r) {
+    if (r.error === 'Skipped') return ['meh', 'Skipped'];
+    if (r.caption && r.caption.length >= 30) return ['good', 'Caption found (' + r.caption.length + ' characters)'];
+    if (r.status && r.status >= 200 && r.status < 300) return ['meh', 'Reply received but no usable caption'];
+    return ['bad', r.blocked ? 'Blocked' : ('HTTP ' + r.status + ' error')];
+  }
+
+  function renderLink(link, results) {
+    var card = h('div', 'card pad res');
+    card.appendChild(h('h3', '', link));
+    var best = null;
+    results.forEach(function (r) {
+      var v = verdict(r);
+      var box = h('div', 'm');
+      var line = h('div');
+      line.appendChild(h('span', 'tag ' + v[0], v[1]));
+      line.appendChild(h('b', '', r.name));
+      box.appendChild(line);
+      if (r.error) box.appendChild(h('div', 'muted small', r.error));
+      if (r.keys.length) box.appendChild(h('div', 'muted small', 'Fields returned: ' + r.keys.join(', ')));
+      if (r.caption && r.caption.length >= 30) {
+        box.appendChild(h('pre', '', r.caption.slice(0, 1200)));
+        if (!best || r.caption.length > best.caption.length) best = r;
+      }
+      card.appendChild(box);
+    });
+    var parsed = null;
+    if (best && window.RV) {
+      parsed = window.RV.parseCaption(best.caption);
+      var pbox = h('div', 'm');
+      pbox.appendChild(h('div', '', 'Recipe Vault parser on that caption:'));
+      pbox.appendChild(h('div', 'small muted', 'Title: ' + parsed.title + ' · ' + parsed.ingredients.length + ' ingredients · ' + parsed.steps.length + ' steps' +
+        (parsed.servings ? ' · serves ' + parsed.servings : '') + (parsed.time ? ' · ' + parsed.time + ' min' : '')));
+      card.appendChild(pbox);
+    }
+    return { node: card, best: best, parsed: parsed };
+  }
+
+  function buildReport(rows) {
+    var lines = ['Recipe Vault link lab · ' + new Date().toISOString(), 'Browser: ' + navigator.userAgent, ''];
+    rows.forEach(function (row, i) {
+      lines.push((i + 1) + '. ' + row.link);
+      row.results.forEach(function (r) {
+        var v = verdict(r);
+        lines.push('   - ' + r.name + ': ' + v[1] + (r.status ? ' [HTTP ' + r.status + ']' : '') + (r.error ? ' [' + r.error.slice(0, 160) + ']' : ''));
+        if (r.keys.length) lines.push('     fields: ' + r.keys.join(', '));
+      });
+      if (row.parsed) lines.push('   parser: ' + row.parsed.ingredients.length + ' ingredients, ' + row.parsed.steps.length + ' steps, title "' + row.parsed.title + '"');
+      if (row.best) lines.push('   caption start: ' + row.best.caption.replace(/\s+/g, ' ').slice(0, 220));
+      lines.push('');
+    });
+    return lines.join('\n');
+  }
+
+  function copyReport() {
+    var ta = $('report');
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(report).then(function () { $('copy').textContent = 'Copied'; }, function () { ta.select(); });
+    } else { ta.select(); }
+  }
+
+  function run() {
+    var links = $('links').value.split('\n').map(cleanUrl).filter(Boolean);
+    var out = $('out');
+    out.textContent = '';
+    if (!links.length) { out.appendChild(h('div', 'notice warn', 'Paste at least one link first.')); return; }
+    $('run').disabled = true; $('run').textContent = 'Testing…';
+    var rows = [];
+    seq(links, function (link) {
+      var ms = methodsFor(link);
+      if (!ms.length) {
+        var none = [{ name: 'Not an Instagram or Facebook link', status: null, error: 'Skipped', keys: [], caption: '' }];
+        var r0 = renderLink(link, none); out.appendChild(r0.node);
+        rows.push({ link: link, results: none, best: null, parsed: null });
+        return Promise.resolve(none);
+      }
+      return seq(ms, runMethod).then(function (results) {
+        var r = renderLink(link, results);
+        out.appendChild(r.node);
+        rows.push({ link: link, results: results, best: r.best, parsed: r.parsed });
+        return results;
+      });
+    }).then(function () {
+      report = buildReport(rows);
+      $('report').value = report;
+      $('repbox').hidden = false;
+      $('copy').disabled = false; $('copy').textContent = 'Copy report';
+      $('run').disabled = false; $('run').textContent = 'Run test again';
+    });
+  }
+
+  $('links').value = DEFAULT_LINKS.join('\n');
+  $('run').addEventListener('click', run);
+  $('copy').addEventListener('click', copyReport);
+  window.__lab = { captionFromHtml: captionFromHtml, methodsFor: methodsFor, cleanUrl: cleanUrl };
+})();
+</script>
+</body>
+</html>
