@@ -32,7 +32,7 @@
     cookDone: {},
     search: '',
     f: { groups: {}, maxTime: 0, fav: false, notCooked: false, sort: 'newest' },
-    add: { mode: 'paste', url: '', text: '', photo: null, file: null, ocr: '' },
+    add: { mode: 'paste', url: '', text: '', files: [], thumbs: [], reading: false, pending: 0, ocr: '' },
     draft: null,
     rs: { id: null, servings: 4, system: 'us' },
     week: mondayOf(new Date()),
@@ -232,13 +232,15 @@
   function handleShare() {
     var q;
     try { q = new URLSearchParams(location.search); } catch (e) { return false; }
-    if (!(q.has('url') || q.has('text') || q.has('title'))) return false;
+    if (!(q.has('url') || q.has('text') || q.has('title') || q.has('shots'))) return false;
     var text = q.get('text') || '', url = q.get('url') || '';
     var link = firstUrl(url) || firstUrl(text);
     var rest = text.replace(/https?:\/\/[^\s]+/g, '').trim();
     ui.add.url = link ? cleanUrl(link) : '';
     if (rest.length > 40) ui.add.text = rest; // a caption, not just "Check out this reel"
-    ui.add.mode = 'paste';
+    var n = parseInt(q.get('shots') || '0', 10) || 0;
+    ui.add.mode = n ? 'shot' : 'paste';
+    ui.add.pending = n;
     ui.shared = true;
     try { history.replaceState(null, '', location.pathname + '#/add'); } catch (e) { location.hash = '#/add'; }
     return true;
@@ -335,6 +337,107 @@
       document.head.appendChild(s);
     });
     return ocrPromise;
+  }
+
+  // Grayscale copy for the text reader; light text on a dark background is flipped so it reads like print.
+  function prepOcrImage(file) {
+    return new Promise(function (resolve, reject) {
+      var img = new Image(), url = URL.createObjectURL(file);
+      img.onload = function () {
+        var s = Math.min(1, 1600 / Math.max(img.width, 1));
+        var c = document.createElement('canvas');
+        c.width = Math.max(1, Math.round(img.width * s)); c.height = Math.max(1, Math.round(img.height * s));
+        var g = c.getContext('2d', { willReadFrequently: true });
+        g.drawImage(img, 0, 0, c.width, c.height);
+        URL.revokeObjectURL(url);
+        try {
+          var d = g.getImageData(0, 0, c.width, c.height), px = d.data, sum = 0, n = 0, i;
+          for (i = 0; i < px.length; i += 4) { var y = 0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2]; px[i] = px[i + 1] = px[i + 2] = y; if ((i / 4) % 7 === 0) { sum += y; n++; } }
+          if (n && sum / n < 110) for (i = 0; i < px.length; i += 4) { px[i] = px[i + 1] = px[i + 2] = 255 - px[i]; }
+          g.putImageData(d, 0, 0);
+        } catch (e) { /* use the plain image */ }
+        resolve(c);
+      };
+      img.onerror = function () { URL.revokeObjectURL(url); reject(new Error('Could not open one of the screenshots')); };
+      img.src = url;
+    });
+  }
+
+  function sortShots(files) {
+    var stamped = files.every(function (f) { return /\d{8}[-_]?\d{6}/.test(f.name || ''); });
+    return stamped ? files.slice().sort(function (x, y) { return x.name < y.name ? -1 : x.name > y.name ? 1 : 0; }) : files;
+  }
+
+  // Screenshots shared from the Android Share menu are parked in a cache by the service worker.
+  function loadSharedShots(n) {
+    ui.add.reading = true; ui.add.ocr = 'Opening your screenshots…';
+    var done = function (files) {
+      ui.add.pending = 0;
+      if (!files.length) { ui.add.reading = false; ui.add.ocr = 'The screenshots did not arrive. Try sharing them again, or choose them below.'; render(); return; }
+      ui.add.reading = false;
+      readShots(sortShots(files));
+    };
+    if (!window.caches) { done([]); return; }
+    caches.open('rv-share').then(function (c) {
+      var base = new URL('./', location.href), files = [];
+      var one = function (i) {
+        if (i >= n) return Promise.resolve();
+        var key = new URL('shared/' + i, base).href;
+        return c.match(key).then(function (res) {
+          if (!res) return;
+          return res.blob().then(function (b) {
+            var nm; try { nm = decodeURIComponent(res.headers.get('x-name') || ''); } catch (e) { nm = ''; }
+            files.push(new File([b], nm || ('shot' + i + '.png'), { type: b.type || 'image/png' }));
+            return c.delete(key);
+          });
+        }).then(function () { return one(i + 1); });
+      };
+      return one(0).then(function () { done(files); });
+    }).catch(function () { done([]); });
+  }
+
+  // Read the text from one or more screenshots, stitch it together and open the review form.
+  function readShots(files) {
+    var a = ui.add;
+    if (a.reading || !files.length) return;
+    a.reading = true; a.mode = 'shot';
+    var setStatus = function (m) { a.ocr = m; var el = $('#ocr-status'); if (el) el.textContent = m; };
+    var idx = 0, total = files.length;
+    render();
+    setStatus('Loading the text reader…');
+    var worker = null, texts = [];
+    return loadOCR().then(function () {
+      return window.Tesseract.createWorker('eng', 1, {
+        logger: function (m) {
+          if (m.status === 'recognizing text') setStatus('Reading screenshot ' + (idx + 1) + ' of ' + total + '… ' + Math.round(m.progress * 100) + '%');
+        }
+      });
+    }).then(function (w) {
+      worker = w;
+      return files.reduce(function (p, f, i) {
+        return p.then(function () {
+          idx = i; setStatus('Reading screenshot ' + (i + 1) + ' of ' + total + '…');
+          return prepOcrImage(f).then(function (img) { return worker.recognize(img); }).then(function (r) { texts.push(RV.cleanOcr((r.data && r.data.text) || '')); });
+        });
+      }, Promise.resolve());
+    }).then(function () {
+      return worker.terminate();
+    }).then(function () {
+      var joined = RV.joinOcr((a.text.trim() ? [a.text] : []).concat(texts));
+      a.reading = false; a.files = []; a.thumbs = [];
+      if (!joined) { a.ocr = 'No text found in the screenshots. Try again with the caption fully open.'; render(); return; }
+      a.text = joined; a.ocr = '';
+      actions.parseText();
+      if (ui.draft) {
+        ui.draft.fromShots = true;
+        ui.draft.warn = 'Read from ' + total + ' screenshot' + (total === 1 ? '' : 's') + '. Check the amounts and spelling before saving.' + (ui.draft.warn ? ' ' + ui.draft.warn : '');
+        render();
+      }
+    }).catch(function (e) {
+      a.reading = false; a.ocr = (e && e.message) || 'Could not read the screenshots.';
+      if (worker) { try { worker.terminate(); } catch (x) { /* ignore */ } }
+      render();
+    });
   }
 
   /* ---------- routing ---------- */
@@ -498,11 +601,12 @@
         '<button class="btn primary grow" style="min-height:52px" data-act="pasteClip">Paste caption and create</button>' +
         (postUrl ? '<a class="btn grow" style="min-height:52px" href="' + esc(postUrl) + '" target="_blank" rel="noopener">Open post</a>' : '') + '</div>'
       :'<div class="card pad stack">' +
-        '<div class="small muted">Choose a screenshot of the recipe. The text is read on your device and dropped into the box below for you to check.</div>' +
-        '<div class="row wrap"><label class="btn" style="cursor:pointer">Choose image<input type="file" accept="image/*" data-change="addPhoto" hidden></label>' +
-        (a.file ? '<button class="btn primary" data-act="runOCR" id="ocr-btn">Read text from image</button>' : '') + '</div>' +
-        (a.photo ? '<img alt="Selected image preview" src="' + a.photo + '" style="max-width:100%;max-height:180px;border-radius:12px;object-fit:cover">' : '') +
-        '<div class="small muted" id="ocr-status">' + esc(a.ocr) + '</div></div>';
+        '<div><b>' + (a.reading ? 'Reading your screenshots' : 'Recipe from screenshots') + '</b></div>' +
+        (a.reading ? '' : '<div class="small muted">In Instagram, open the caption (tap more) and take a screenshot. Scroll and take another if it continues. On the screenshot preview tap Share, then Recipe Vault. Select several screenshots to share them together. You can also choose them here.</div>' +
+        '<div class="row wrap"><label class="btn" style="cursor:pointer">Choose screenshots<input type="file" accept="image/*" multiple data-change="addPhoto" hidden></label>' +
+        (a.files.length ? '<button class="btn primary" data-act="runOCR">Read ' + a.files.length + ' screenshot' + (a.files.length === 1 ? '' : 's') + '</button>' : '') + '</div>') +
+        (a.thumbs.length ? '<div class="row wrap">' + a.thumbs.map(function (t) { return '<img alt="Selected screenshot" src="' + t + '" style="height:90px;border-radius:10px;object-fit:cover">'; }).join('') + '</div>' : '') +
+        '<div class="small muted" id="ocr-status" role="status">' + esc(a.ocr) + '</div></div>';
     return '<div class="page-head"><h1 class="display">Add recipe</h1><a class="icon-btn" href="#/" aria-label="Close">' + svg('x') + '</a></div>' +
       '<div class="seg"><button class="' + (a.mode === 'paste' ? 'on' : '') + '" data-act="addMode" data-v="paste">Paste text</button><button class="' + (a.mode === 'shot' ? 'on' : '') + '" data-act="addMode" data-v="shot">Screenshot</button></div>' +
       '<div class="stack" style="margin-top:14px">' + helper +
@@ -555,6 +659,7 @@
   function viewDraftForm(title, editing) {
     var d = ui.draft;
     var warn = d.warn ? '<div class="notice warn">' + esc(d.warn) + '</div>' : '';
+    if (d.fromShots) warn += '<button class="btn small" style="align-self:flex-start" data-act="moreShots">Add more screenshots (rebuilds this form)</button>';
     return '<div class="page-head"><h1 class="display">' + esc(title) + '</h1><button class="icon-btn" aria-label="Cancel" data-act="cancelDraft">' + svg('x') + '</button></div>' +
       '<div class="stack">' + warn +
       '<div class="card pad stack">' +
@@ -599,7 +704,7 @@
     r.updatedAt = now();
     delete S.deleted[r.id];
     ui.draft = null;
-    ui.add = { mode: 'paste', url: '', text: '', photo: null, file: null, ocr: '' };
+    ui.add = { mode: 'paste', url: '', text: '', files: [], thumbs: [], reading: false, pending: 0, ocr: '' };
     save();
     toast('Saved');
     location.hash = '#/recipe/' + r.id;
@@ -939,7 +1044,7 @@
         actions.parseText();
       }, function () { toast('Could not read the clipboard. Long-press the box below and choose Paste.'); });
     },
-    blankDraft: function () { ui.draft = newDraft({ source: RV.detectSource(ui.add.url), url: ui.add.url, thumb: ui.add.photo }); render(); },
+    blankDraft: function () { ui.draft = newDraft({ source: RV.detectSource(ui.add.url), url: ui.add.url, thumb: null }); render(); },
     parseText: function () {
       var a = ui.add;
       if (!a.text.trim()) { toast('Paste the recipe text first'); return; }
@@ -950,28 +1055,22 @@
       else if (!p.ingredients.length) warn = 'No ingredients found. Add them below, one per line.';
       else if (!p.steps.length) warn = 'No steps found. Add them below if the post has them.';
       ui.draft = newDraft({
-        title: p.title, source: RV.detectSource(a.url), url: a.url.trim(), thumb: a.photo, baseServings: p.servings || 4, time: p.time || '',
+        title: p.title, source: RV.detectSource(a.url), url: a.url.trim(), thumb: null, baseServings: p.servings || 4, time: p.time || '',
         ingText: p.ingredients.map(function (i) { return i.raw; }).join('\n'), stepText: p.steps.join('\n'), tags: tags, notes: p.description || '', warn: warn
       });
       render(); window.scrollTo(0, 0);
     },
-    runOCR: function () {
-      var a = ui.add;
-      if (!a.file) return;
-      var st = $('#ocr-status'), btn = $('#ocr-btn');
-      if (btn) btn.disabled = true;
-      st.textContent = 'Loading the text reader…';
-      loadOCR().then(function () {
-        return window.Tesseract.recognize(a.file, 'eng', {
-          logger: function (m) { if (m.status === 'recognizing text') st.textContent = 'Reading… ' + Math.round(m.progress * 100) + '%'; }
-        });
-      }).then(function (res) {
-        var text = (res.data.text || '').trim();
-        a.text = text; a.ocr = text ? 'Done. Check the text below for mistakes.' : 'No text found in that image.';
-        ui.add.mode = 'paste'; render();
-      }).catch(function (e) {
-        a.ocr = e.message; if (btn) btn.disabled = false; st.textContent = e.message;
-      });
+    runOCR: function () { readShots(ui.add.files.slice()); },
+    moreShots: function () {
+      var inp = document.createElement('input');
+      inp.type = 'file'; inp.accept = 'image/*'; inp.multiple = true;
+      inp.onchange = function () {
+        var fs = Array.prototype.slice.call(inp.files || []);
+        if (!fs.length) return;
+        ui.draft = null;
+        readShots(sortShots(fs));
+      };
+      inp.click();
     },
     cancelDraft: function () {
       var wasEdit = ui.draft && ui.draft.id;
@@ -1123,9 +1222,12 @@
 
   var changes = {
     addPhoto: function (el) {
-      var f = el.files && el.files[0]; if (!f) return;
-      ui.add.file = f;
-      resizeImage(f, 640, 0.72).then(function (d) { ui.add.photo = d; render(); }, function (e) { toast(e.message); });
+      var fs = Array.prototype.slice.call(el.files || []);
+      if (!fs.length) return;
+      ui.add.files = sortShots(ui.add.files.concat(fs)); ui.add.thumbs = [];
+      Promise.all(ui.add.files.map(function (f) { return resizeImage(f, 200, 0.6).catch(function () { return ''; }); })).then(function (ds) {
+        ui.add.thumbs = ds.filter(Boolean); render();
+      });
     },
     draftPhoto: function (el) {
       var f = el.files && el.files[0]; if (!f) return;
@@ -1198,7 +1300,8 @@
     var shared = handleShare();
     if (!shared && (location.hash === '' || location.hash === '#')) location.hash = '#/';
     render();
-    if (shared) { toast('Link received'); checkClipboard(); }
+    if (shared && ui.add.pending) { loadSharedShots(ui.add.pending); }
+    else if (shared) { toast('Link received'); checkClipboard(); }
   });
 
   if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol)) {

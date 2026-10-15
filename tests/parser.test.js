@@ -182,5 +182,32 @@ t('mergeStates: newest recipe wins, tombstone removes', () => {
   assert.deepStrictEqual(m.plan, {});
 });
 
+t('cleanOcr removes phone and Instagram chrome, keeps the recipe', () => {
+  const raw = '6:09 LTE 87%\nReels\ncreator_name Follow\ncreator_name Garlic Pasta ... more\n1.5 Ib spaghetti\n12,345 likes\nView all 214 comments\nAdd a comment...\n2d\nLiked by someone and others';
+  const c = RV.cleanOcr(raw);
+  assert.strictEqual(c, 'Garlic Pasta\n1.5 lb spaghetti');
+});
+
+t('1.5 lb is an ingredient, not step 1', () => {
+  const p = RV.parseCaption('Chicken\nIngredients\n1.5 lb chicken thighs\n2.5 cups rice\nMethod\n1. Cook it all.');
+  assert.strictEqual(p.ingredients.length, 2);
+  assert.strictEqual(p.steps.length, 1);
+});
+
+t('time comes from the header line, not from step durations', () => {
+  const p = RV.parseCaption('Chicken\nServes 4 | 35 min\nIngredients\n1 lb chicken\nMethod\n1. Bake 20 minutes.\n2. Rest 5 minutes and spoon the sauce over.');
+  assert.strictEqual(p.time, 35);
+  assert.strictEqual(RV.parseCaption('Prep time: 10 min | Cook time: 20 min\nIngredients\n1 egg').time, 30);
+});
+
+t('joinOcr drops lines repeated where screenshots overlap', () => {
+  const a = 'Title\nIngredients\n1 cup rice\n2 tbsp oil\nSalt and pepper';
+  const b = '2 tbsp oil\nSalt and pepper\nMethod\n1. Boil the rice for 10 minutes.';
+  const j = RV.joinOcr([a, b]);
+  assert.strictEqual(j.split('\n').filter(l => l === 'Salt and pepper').length, 1);
+  assert.ok(j.indexOf('Method') > j.indexOf('Salt and pepper'));
+  assert.strictEqual(RV.joinOcr([a, 'Method\n1. Boil.']).split('\n').length, 8); // no overlap: kept whole, blank line between
+});
+
 console.log(failed ? '\n' + failed + ' failed' : '\nall passed');
 process.exit(failed ? 1 : 0);

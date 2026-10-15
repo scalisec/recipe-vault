@@ -145,8 +145,8 @@
     return l.replace(/#[\wÀ-ɏ]+/g, '').replace(/@[\w.]+/g, '').replace(/https?:\/\/\S+/g, '').replace(/\s+/g, ' ').trim();
   }
 
-  function isNumberedStep(l) { return /^(?:step\s*)?\d+\s*[.):\-]\s*\S/i.test(l); }
-  function stripStepNumber(l) { return l.replace(/^(?:step\s*)?\d+\s*[.):\-]\s*/i, '').replace(/^[\-•*·▪️]\s*/, '').trim(); }
+  function isNumberedStep(l) { return /^(?:step\s*)?\d+\s*[.):\-](?!\d)\s*\S/i.test(l); }
+  function stripStepNumber(l) { return l.replace(/^(?:step\s*)?\d+\s*[.):\-](?!\d)\s*/i, '').replace(/^[\-•*·▪️]\s*/, '').trim(); }
 
   function looksLikeIngredient(l) {
     var s = normalizeFractions(stripBullet(stripEmoji(l)));
@@ -174,7 +174,12 @@
   function parseTime(text) {
     var lines = text.split(/\n/);
     var total = null, sum = 0, any = null;
+    var segs = [];
     lines.forEach(function (l) {
+      if (isNumberedStep(l.trim())) return; // a step such as "5. Rest 5 minutes" is not the recipe time
+      l.split(/[|•·;]/).forEach(function (x) { segs.push(x); });
+    });
+    segs.forEach(function (l) {
       var re = /(\d+)\s*(?:-\s*\d+\s*)?(hours?|hrs?|h|minutes?|mins?|m)\b/gi, m, mins = 0, found = false;
       while ((m = re.exec(l))) {
         found = true;
@@ -182,8 +187,9 @@
         mins += /^h/i.test(m[2]) ? v * 60 : v;
       }
       if (!found) return;
+      var labelled = l.trim().length <= 34; // "Cook time: 20 min", not a whole instruction sentence
       if (/total|ready in/i.test(l)) total = total == null ? mins : total;
-      else if (/prep|cook|bake|marinate|rest/i.test(l)) sum += mins;
+      else if (labelled && /prep|cook|bake|marinate|rest/i.test(l)) sum += mins;
       else if (any == null) any = mins;
     });
     if (total != null) return total;
@@ -546,6 +552,79 @@
     return out;
   }
 
+  /* ---------- screenshots: clean and stitch OCR text ---------- */
+  var OCR_JUNK = [
+    /^\d{1,2}:\d{2}(\s*[ap]m)?$/i,
+    /^\d{1,2}:\d{2}\b.*\d{1,3}\s*%$/,
+    /^(lte|5g|4g|3g|wi-?fi)?\s*\d{1,3}\s*%$/i,
+    /^(reels|follow|following|message|reply|like|share|send|save|saved|remix|sponsored|suggested for you|translate|see translation|see more|hide replies|more|\.{2,3}\s*more|…\s*more)$/i,
+    /^original audio.*$/i,
+    /^add (a )?comment.*$/i,
+    /^view (all )?[\d,.]*[kKmM]?\s*comments?$/i,
+    /^view (more )?replies.*$/i,
+    /^[\d,.]+\s?[kKmM]?\s+(likes?|views?|plays?|comments?|shares?|reposts?)$/i,
+    /^liked by\b.*$/i,
+    /^\d+\s*(s|m|h|d|w|min|mins|hrs?|hours?|days?|weeks?)(\s+ago)?$/i,
+    /^[^A-Za-z0-9]{1,6}$/
+  ];
+  var OCR_USER = /^@?([\w.]{2,30})\s*[•·.]?\s*(follow|following)$/i;
+
+  function cleanOcr(text) {
+    var user = '';
+    var lines = String(text || '').replace(/\r/g, '').split('\n').map(function (l) { return l.replace(/\s+/g, ' ').trim(); });
+    // find the "username Follow" line first so the name can be stripped from the caption's first line
+    lines.forEach(function (l) { var m = l.match(OCR_USER); if (m && !user) user = m[1]; });
+    var out = [];
+    lines.forEach(function (l) {
+      if (!l) { out.push(''); return; }
+      if (OCR_USER.test(l)) return;
+      for (var i = 0; i < OCR_JUNK.length; i++) if (OCR_JUNK[i].test(l)) return;
+      if (user && l.toLowerCase().indexOf(user.toLowerCase() + ' ') === 0) l = l.slice(user.length + 1).trim();
+      l = l.replace(/\s*(…|\.{2,3})\s*more$/i, '').trim();
+      l = l.replace(/\bIb(s?)\b/g, 'lb$1').replace(/(\d)\s*0z\b/g, '$1 oz');
+      if (l) out.push(l);
+    });
+    return out.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  }
+
+  function ocrNorm(s) { return String(s).toLowerCase().replace(/[^a-z0-9]+/g, ''); }
+  function ocrSame(a, b) {
+    var x = ocrNorm(a), y = ocrNorm(b);
+    if (!x || !y) return false;
+    if (x === y) return true;
+    if (x.length < 6 || y.length < 6) return false;
+    var bg = function (t) { var m = {}, n = 0; for (var i = 0; i < t.length - 1; i++) { var g = t.substr(i, 2); m[g] = (m[g] || 0) + 1; n++; } return { m: m, n: n }; };
+    var A = bg(x), B = bg(y), hit = 0;
+    Object.keys(A.m).forEach(function (g) { if (B.m[g]) hit += Math.min(A.m[g], B.m[g]); });
+    return (2 * hit) / (A.n + B.n) >= 0.85;
+  }
+
+  // Join OCR text from consecutive screenshots, dropping lines that repeat where they overlap.
+  function joinOcr(chunks) {
+    var all = [];
+    (chunks || []).forEach(function (chunk) {
+      var next = String(chunk || '').split('\n');
+      var nb = [];
+      next.forEach(function (l, i) { if (l.trim()) nb.push(i); });
+      if (!nb.length) return;
+      var pb = [];
+      all.forEach(function (l, i) { if (l.trim()) pb.push(i); });
+      var cut = -1;
+      for (var k = Math.min(10, pb.length, nb.length); k >= 1 && cut < 0; k--) {
+        for (var j = 0; j <= Math.min(6, nb.length - k) && cut < 0; j++) {
+          var ok = true;
+          for (var i = 0; i < k && ok; i++) ok = ocrSame(all[pb[pb.length - k + i]], next[nb[j + i]]);
+          if (ok && (k >= 2 || ocrNorm(next[nb[j]]).length >= 20)) cut = nb[j + k - 1];
+        }
+      }
+      var rest = cut >= 0 ? next.slice(cut + 1) : next;
+      while (rest.length && !rest[0].trim()) rest.shift();
+      if (all.length && rest.length && all[all.length - 1].trim()) all.push('');
+      all = all.concat(rest);
+    });
+    return all.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  }
+
   var RV = {
     parseCaption: parseCaption,
     parseIngredientLine: parseIngredientLine,
@@ -556,7 +635,9 @@
     fmtQty: fmtQty,
     buildGroceryList: buildGroceryList,
     mergeStates: mergeStates,
-    nameKey: nameKey
+    nameKey: nameKey,
+    cleanOcr: cleanOcr,
+    joinOcr: joinOcr
   };
 
   if (typeof module !== 'undefined' && module.exports) module.exports = RV;
