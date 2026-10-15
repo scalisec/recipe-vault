@@ -141,6 +141,62 @@ with sync_playwright() as p:
     page.wait_for_selector('.rcard')
     check('persists after reload', page.locator('.rcard').count() == 2)
 
+    # --- install, share target, clipboard paste, cook mode ---
+    origin = f'http://127.0.0.1:{port}'
+    mf = page.request.get(origin + '/manifest.webmanifest').json()
+    check('manifest has share target', mf.get('share_target', {}).get('params', {}).get('url') == 'url')
+    check('manifest icons load', all(page.request.get(origin + '/' + i['src']).ok for i in mf['icons']))
+    page.goto(BASE)
+    page.wait_for_selector('.rcard')
+    sw_ready = page.evaluate("navigator.serviceWorker.ready.then(function (r) { return !!r.active; })")
+    check('service worker active', sw_ready)
+
+    ctx.grant_permissions(['clipboard-read', 'clipboard-write'], origin=origin)
+    CAPTION = ("Lemon Herb Salmon\nServes 2 | 20 min\n\nIngredients:\n- 2 salmon fillets\n- 1 lemon\n- 2 tbsp olive oil\n\n"
+               "Method:\n1. Season the salmon with salt and pepper and a squeeze of lemon.\n2. Bake at 400°F for 12 minutes.")
+
+    page.goto(BASE + '#/add')
+    page.evaluate("navigator.clipboard.writeText('https://www.instagram.com/reel/XYZ789/?igsh=abc')")
+    page.click('[data-act=pasteClip]')
+    page.wait_for_function("document.querySelector('#add-url') && document.querySelector('#add-url').value.indexOf('XYZ789') !== -1")
+    check('link on clipboard fills the link box', page.input_value('#add-url') == 'https://www.instagram.com/reel/XYZ789/', page.input_value('#add-url'))
+    check('still on the add screen after a link paste', page.locator('#d-title').count() == 0)
+
+    page.evaluate("navigator.clipboard.writeText(" + json.dumps(CAPTION) + ")")
+    page.click('[data-act=pasteClip]')
+    page.wait_for_selector('#d-title')
+    check('paste caption creates recipe', page.input_value('#d-title') == 'Lemon Herb Salmon', page.input_value('#d-title'))
+    check('pasted link kept as source', page.input_value('#d-url') == 'https://www.instagram.com/reel/XYZ789/', page.input_value('#d-url'))
+    check('pasted recipe ingredient count', page.inner_text('#ing-count').startswith('3 ingredients'), page.inner_text('#ing-count'))
+    page.click('[data-act=saveDraft]')
+    page.wait_for_url('**#/recipe/*')
+    page.wait_for_selector('ul.list li')
+
+    page.click('[data-act=cook]')
+    page.wait_for_selector('.cook')
+    check('cook mode shows steps', page.locator('.cstep').count() == 2, page.locator('.cstep').count())
+    page.locator('.cstep').first.click()
+    check('cook step can be checked off', page.locator('.cstep.done').count() == 1)
+    page.screenshot(path=f'{SHOTS}/10-cook.png')
+    page.keyboard.press('Escape')
+    check('cook mode closes', page.locator('.cook').count() == 0)
+
+    page.goto(BASE + '?url=https%3A%2F%2Fwww.instagram.com%2Freel%2FABC123%2F%3Figsh%3Dxyz&text=Check+out+this+reel')
+    page.wait_for_selector('#add-url')
+    check('shared link prefilled, tracking removed', page.input_value('#add-url') == 'https://www.instagram.com/reel/ABC123/', page.input_value('#add-url'))
+    check('shared link note shown', 'Link received' in page.inner_text('#view'))
+    check('open post link present', page.locator('a:has-text("Open post")').count() == 1)
+    check('share params cleared from address bar', '?' not in page.url.split('#')[0], page.url)
+    page.screenshot(path=f'{SHOTS}/11-shared.png', full_page=True)
+
+    page.goto(BASE + '?text=' + 'Look+at+this+https%3A%2F%2Fwww.facebook.com%2Fshare%2Fr%2Fabc%2F')
+    page.wait_for_selector('#add-url')
+    check('link found inside shared text', page.input_value('#add-url') == 'https://www.facebook.com/share/r/abc/', page.input_value('#add-url'))
+
+    page.goto(BASE + '#/settings')
+    check('install card in settings', 'install on your phone' in page.inner_text('#view').lower())
+    page.goto(BASE + '#/')
+
     # print css
     page.goto(BASE + '#/recipe/' + data['recipes'][0]['id'])
     page.emulate_media(media='print')

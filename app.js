@@ -26,6 +26,9 @@
   /* ---------- state ---------- */
   var S = freshState();
   var ui = {
+    shared: false,
+    installEvt: null,
+    cookDone: {},
     search: '',
     f: { groups: {}, maxTime: 0, fav: false, notCooked: false, sort: 'newest' },
     add: { mode: 'paste', url: '', text: '', photo: null, file: null, ocr: '' },
@@ -208,6 +211,62 @@
     ta.remove();
   }
 
+  /* ---------- links, sharing, wake lock ---------- */
+  function cleanUrl(u) {
+    u = (u || '').trim();
+    try {
+      var x = new URL(u);
+      ['igsh', 'igshid', 'utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'fbclid', 'mibextid'].forEach(function (k) { x.searchParams.delete(k); });
+      var s = x.toString();
+      return s.replace(/\?$/, '');
+    } catch (e) { return u; }
+  }
+
+  function firstUrl(s) {
+    var m = String(s || '').match(/https?:\/\/[^\s]+/);
+    return m ? m[0].replace(/[)\].,;!]+$/, '') : '';
+  }
+
+  // Android sends a shared post to index.html?url=...&text=...&title=...
+  function handleShare() {
+    var q;
+    try { q = new URLSearchParams(location.search); } catch (e) { return false; }
+    if (!(q.has('url') || q.has('text') || q.has('title'))) return false;
+    var text = q.get('text') || '', url = q.get('url') || '';
+    var link = firstUrl(url) || firstUrl(text);
+    var rest = text.replace(/https?:\/\/[^\s]+/g, '').trim();
+    ui.add.url = link ? cleanUrl(link) : '';
+    if (rest.length > 40) ui.add.text = rest; // a caption, not just "Check out this reel"
+    ui.add.mode = 'paste';
+    ui.shared = true;
+    try { history.replaceState(null, '', location.pathname + '#/add'); } catch (e) { location.hash = '#/add'; }
+    return true;
+  }
+
+  function isStandalone() {
+    try { return window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true; } catch (e) { return false; }
+  }
+  window.addEventListener('beforeinstallprompt', function (e) {
+    e.preventDefault();
+    ui.installEvt = e;
+    if (currentRoute() === 'settings') render();
+  });
+
+  var wake = null, cookOpen = false;
+  function acquireWake() {
+    if (!('wakeLock' in navigator)) { toast('This browser cannot keep the screen on'); return; }
+    navigator.wakeLock.request('screen').then(function (l) {
+      wake = l;
+      l.addEventListener('release', function () { if (wake === l) wake = null; });
+    }).catch(function () { /* denied (for example battery saver); cooking still works */ });
+  }
+  function releaseWake() {
+    if (wake) { try { wake.release(); } catch (e) { /* ignore */ } wake = null; }
+  }
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'visible' && cookOpen && !wake) acquireWake();
+  });
+
   /* ---------- images ---------- */
   function resizeImage(file, max, quality) {
     return new Promise(function (resolve, reject) {
@@ -384,9 +443,15 @@
     if (ui.draft && !ui.draft.fromAdd) ui.draft = null;
     if (ui.draft) return viewDraftForm('Review recipe', false);
     var a = ui.add;
+    var postUrl = safeUrl(a.url);
+    var linkNote = (ui.shared && postUrl && !a.text.trim())
+      ? '<div class="notice"><b>Link received.</b> Instagram and Facebook only share the link, not the recipe. Tap Open post, copy the caption, come back and tap Paste caption and create.</div>'
+      : '<div class="notice">Copy the caption from the Instagram or Facebook post (or the recipe from the comments), then tap Paste caption and create.</div>';
     var helper = a.mode === 'paste'
-      ? '<div class="notice">On Instagram or Facebook, open the post, copy the caption (long-press the text), then paste it below. If the recipe is only in the comments, copy that instead.</div>'
-      : '<div class="card pad stack">' +
+      ? linkNote + '<div class="row wrap">' +
+        '<button class="btn primary grow" style="min-height:52px" data-act="pasteClip">Paste caption and create</button>' +
+        (postUrl ? '<a class="btn grow" style="min-height:52px" href="' + esc(postUrl) + '" target="_blank" rel="noopener">Open post</a>' : '') + '</div>'
+      :'<div class="card pad stack">' +
         '<div class="small muted">Choose a screenshot of the recipe. The text is read on your device and dropped into the box below for you to check.</div>' +
         '<div class="row wrap"><label class="btn" style="cursor:pointer">Choose image<input type="file" accept="image/*" data-change="addPhoto" hidden></label>' +
         (a.file ? '<button class="btn primary" data-act="runOCR" id="ocr-btn">Read text from image</button>' : '') + '</div>' +
@@ -398,7 +463,7 @@
       '<div class="field"><label for="add-url">Link to the post (optional)</label><input class="input" id="add-url" type="url" inputmode="url" placeholder="https://www.instagram.com/reel/…" data-bind="add.url" value="' + esc(a.url) + '"></div>' +
       '<div class="field"><label for="add-text">Recipe text</label><textarea class="textarea" id="add-text" style="min-height:200px" placeholder="Paste the caption here. Headings like Ingredients and Method help." data-bind="add.text">' + esc(a.text) + '</textarea>' +
       '<button class="btn small" style="align-self:flex-start" data-act="useSample">Paste an example</button></div>' +
-      '<div class="notice warn">Automatic link fetching is not switched on yet, so the app reads what you paste. The link is saved so you can always open the original post.</div>' +
+      '<div class="small muted">The app reads the text you paste. The link is saved with the recipe so you can always reopen the original post.</div>' +
       '<div class="row"><button class="btn primary grow" data-act="parseText">Create recipe</button><button class="btn" data-act="blankDraft">Start blank</button></div></div>';
   }
 
@@ -541,7 +606,8 @@
       (steps ? '<ol class="steps">' + steps + '</ol>' : '<div class="muted small">No steps saved.</div>') +
       '<div class="field no-print" style="margin-top:18px"><label for="r-notes">Notes</label><textarea class="textarea" id="r-notes" style="min-height:80px" placeholder="Tweaks, what worked, what to change next time" data-change="notes">' + esc(r.notes || '') + '</textarea></div>' +
       (r.notes ? '<div class="print-only" style="margin-top:14px"><b>Notes:</b> ' + esc(r.notes) + '</div>' : '') +
-      '<div class="row wrap no-print" style="margin-top:18px">' +
+      '<button class="btn primary block no-print" style="margin-top:18px;min-height:52px;font-size:16px" data-act="cook">Cook mode</button>' +
+      '<div class="row wrap no-print" style="margin-top:8px">' +
       '<button class="btn grow" data-act="print">Print</button><button class="btn grow" data-act="openExport">Export</button>' +
       '<button class="btn primary grow" data-act="openAddPlan">Add to plan</button></div>' +
       '<div class="row wrap no-print" style="margin-top:8px"><a class="btn grow" href="#/edit/' + r.id + '">Edit</a><button class="btn danger grow" data-act="deleteRecipe">Delete</button></div>';
@@ -662,6 +728,13 @@
         '<button class="chip opt dashed" data-act="addOpt" data-g="' + esc(g.name) + '">+ Add</button></div></div>';
     }).join('');
     return '<div class="page-head"><h1 class="display">Settings</h1></div>' +
+      '<h2 class="eyebrow">Install on your phone</h2><div class="card pad stack">' +
+      (isStandalone()
+        ? '<div class="notice">Installed. In Instagram or Facebook, tap Share on a post and choose <b>Recipe Vault</b> to start adding it.</div>'
+        : '<div class="small muted">Install it so it opens like an app, works offline, and appears in your phone’s Share menu.</div>' +
+          '<button class="btn primary block" data-act="install">' + (ui.installEvt ? 'Install Recipe Vault' : 'How to install') + '</button>' +
+          '<ol class="small muted" style="margin:0;padding-left:18px;line-height:1.6"><li>In Chrome, tap the ⋮ menu.</li><li>Choose <b>Install app</b> (or Add to Home screen).</li><li>Open Recipe Vault from your home screen.</li><li>In Instagram, tap Share on a recipe post and pick <b>Recipe Vault</b>.</li></ol>') +
+      '</div>' +
       '<h2 class="eyebrow">Storage and sync</h2><div class="card pad stack">' +
       '<div class="row between"><div><b>Google Drive</b><div class="muted small">File “' + Drive.FILE_NAME + '” in My Drive</div></div><span class="chip tag">' + esc(status) + '</span></div>' +
       (last ? '<div class="small muted">Last synced ' + new Date(last).toLocaleString() + '</div>' : '') +
@@ -692,7 +765,37 @@
     var first = root.querySelector('input, button');
     if (first && first.tagName === 'INPUT') first.focus();
   }
-  function closeSheet() { $('#overlay-root').innerHTML = ''; }
+  function closeSheet() {
+    $('#overlay-root').innerHTML = '';
+    if (cookOpen) { cookOpen = false; releaseWake(); }
+  }
+
+  function cookHTML() {
+    var r = getR(ui.rs.id);
+    var f = ui.rs.servings / r.baseServings, sys = ui.rs.system;
+    var done = ui.cookDone[r.id] || {};
+    var ings = (r.ingredients || []).map(function (i) {
+      var x = RV.scaleIngredient(i, f, sys);
+      return '<li><span>' + esc(x.name) + '</span><span class="ing-amt">' + esc(x.amount) + '</span></li>';
+    }).join('');
+    var steps = (r.steps || []).map(function (s, n) {
+      return '<button class="cstep' + (done[n] ? ' done' : '') + '" data-act="cookStep" data-i="' + n + '" aria-pressed="' + (done[n] ? 'true' : 'false') + '">' +
+        '<span class="num">' + (n + 1) + '</span><span>' + esc(RV.convertTemps(s, sys)) + '</span></button>';
+    }).join('');
+    return '<div class="cook" role="dialog" aria-modal="true" aria-label="Cook mode">' +
+      '<div class="cook-head"><div class="grow"><div class="display" style="font-size:20px;font-weight:700;line-height:1.2">' + esc(r.title) + '</div>' +
+      '<div class="small muted">Serves ' + ui.rs.servings + ' · screen stays on</div></div>' +
+      '<button class="btn" data-act="closeSheet">Done</button></div>' +
+      '<details class="cook-ing"' + (steps ? '' : ' open') + '><summary>Ingredients (' + (r.ingredients || []).length + ')</summary><ul class="list" style="margin-top:8px">' + ings + '</ul></details>' +
+      '<div class="cook-steps">' + (steps || '<div class="muted">No steps saved for this recipe.</div>') + '</div></div>';
+  }
+
+  function openCook() {
+    $('#overlay-root').innerHTML = cookHTML();
+    cookOpen = true;
+    acquireWake();
+    window.scrollTo(0, 0);
+  }
 
   function sheetExport(r) {
     return '<h2 class="display">Export</h2><div class="stack">' +
@@ -767,6 +870,20 @@
 
     addMode: function (el) { ui.add.mode = el.getAttribute('data-v'); render(); },
     useSample: function () { ui.add.text = SAMPLE_CAPTION; render(); },
+    pasteClip: function () {
+      if (!navigator.clipboard || !navigator.clipboard.readText) { toast('Long-press the box below and choose Paste'); return; }
+      navigator.clipboard.readText().then(function (raw) {
+        var t = (raw || '').trim();
+        if (!t) { toast('Nothing copied yet. Copy the caption first.'); return; }
+        if (/^https?:\/\/\S+$/.test(t)) {
+          ui.add.url = cleanUrl(t); render();
+          toast('Link pasted. Now copy the caption and tap again.');
+          return;
+        }
+        ui.add.text = t;
+        actions.parseText();
+      }, function () { toast('Could not read the clipboard. Long-press the box below and choose Paste.'); });
+    },
     blankDraft: function () { ui.draft = newDraft({ source: RV.detectSource(ui.add.url), url: ui.add.url, thumb: ui.add.photo }); render(); },
     parseText: function () {
       var a = ui.add;
@@ -844,6 +961,21 @@
     servReset: function () { ui.rs.servings = getR(ui.rs.id).baseServings; render(); },
     sys: function (el) { ui.rs.system = el.getAttribute('data-v'); render(); },
     print: function () { window.print(); },
+    cook: function () { ui.cookDone[ui.rs.id] = {}; openCook(); },
+    cookStep: function (el) {
+      var d = ui.cookDone[ui.rs.id] = ui.cookDone[ui.rs.id] || {};
+      var i = el.getAttribute('data-i');
+      if (d[i]) delete d[i]; else d[i] = true;
+      var keep = document.querySelector('.cook') ? document.querySelector('.cook').scrollTop : 0;
+      $('#overlay-root').innerHTML = cookHTML();
+      var c = document.querySelector('.cook'); if (c) c.scrollTop = keep;
+    },
+    install: function () {
+      var e = ui.installEvt;
+      if (!e) { toast('Use the browser menu: Install app'); return; }
+      e.prompt();
+      e.userChoice.then(function () { ui.installEvt = null; render(); });
+    },
     openExport: function () { openSheet(sheetExport(getR(ui.rs.id))); },
     exCopy: function () { var r = getR(ui.rs.id); copyText(recipeText(r, ui.rs.servings, ui.rs.system)); closeSheet(); },
     exTxt: function () { var r = getR(ui.rs.id); downloadFile(slug(r.title) + '.txt', recipeText(r, ui.rs.servings, ui.rs.system)); closeSheet(); },
@@ -1008,7 +1140,13 @@
   /* ---------- boot ---------- */
   Store.open().then(function () { return Store.get('state'); }).then(function (saved) {
     if (saved) applyState(saved);
-    if (location.hash === '' || location.hash === '#') location.hash = '#/';
+    var shared = handleShare();
+    if (!shared && (location.hash === '' || location.hash === '#')) location.hash = '#/';
     render();
+    if (shared) toast('Link received');
   });
+
+  if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol)) {
+    window.addEventListener('load', function () { navigator.serviceWorker.register('sw.js').catch(function () { /* offline mode is optional */ }); });
+  }
 })();

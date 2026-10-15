@@ -9,11 +9,24 @@ A small personal app for saving Instagram and Facebook recipes in one place, wit
 
 Your library is stored in the browser on each device (IndexedDB). Use Settings, Export backup now and then, or connect Google Drive (below).
 
-## Adding a recipe
+## Install on Android and share posts to the app
+
+1. Open the app in Chrome, tap the ⋮ menu, choose **Install app** (or Add to Home screen). Settings in the app also has an install card.
+2. In Instagram or Facebook, tap **Share** on a recipe post and choose **Recipe Vault**. If it is not in the list yet, remove the home-screen icon and install again, so Android registers the share option.
+3. The app opens on the Add screen with the post link filled in (tracking junk removed).
+4. Tap **Open post**, copy the caption, come back, and tap **Paste caption and create**. That reads your clipboard, parses the recipe, and shows the review form.
+
+Instagram and Facebook share only the link, not the recipe text, which is why the caption step is still manual. Installing also makes the app work offline.
+
+## Adding a recipe (any browser)
 
 1. On Instagram or Facebook, copy the caption (or the recipe from the comments).
-2. In the app: Add, paste the text, optionally paste the post link, tap Create recipe.
+2. In the app: Add, then **Paste caption and create** (or paste into the box and tap Create recipe).
 3. Check the parsed title, amounts, steps and auto-tagged categories, then Save.
+
+## Cook mode
+
+Open a recipe and tap **Cook mode**: large steps you tick off with a tap, ingredients scaled to the servings you chose, and the screen stays on until you tap Done.
 
 Screenshots work too: Add, Screenshot, choose the image, Read text from image (done on your device with Tesseract.js, loaded from a CDN the first time). Always check OCR text for mistakes.
 
@@ -46,7 +59,7 @@ The app asks for Drive access so it can find the shared file by name. It only re
 
 ## Not built yet
 
-- **Automatic fetching from a link.** Instagram and Facebook block browsers from reading posts, and AI parsing needs an API key that cannot live safely in a static page. A small serverless function can add this later; `parseCaption` in `parser.js` is the function it would improve or replace.
+- **Automatic fetching of the caption from a link.** Instagram and Facebook block browsers from reading posts. Ideas to try next, all free: a bookmarklet or on-phone shortcut that reads the caption in your own logged-in session, or a small serverless function. AI parsing needs an API key that cannot live safely in a static page. `parseCaption` in `parser.js` is the function any of these would improve or replace.
 
 ## Tests
 

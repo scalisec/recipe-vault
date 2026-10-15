@@ -208,11 +208,26 @@ h1, h2, h3 { margin: 0; }
 .notice { padding: 10px 12px; border-radius: 12px; background: var(--accent-soft); color: var(--accent-ink); font-size: 13px; font-weight: 500; }
 .notice.warn { background: #FBEFD5; color: #6B4A0B; }
 
+/* ---------- cook mode ---------- */
+.cook { position: fixed; inset: 0; z-index: 50; background: var(--ground); overflow: auto; padding: 16px 16px calc(32px + env(safe-area-inset-bottom)); }
+.cook > * { max-width: 720px; margin-left: auto; margin-right: auto; }
+.cook-head { display: flex; align-items: center; gap: 12px; padding-bottom: 12px; position: sticky; top: -16px; padding-top: 16px; margin-top: -16px; background: var(--ground); z-index: 1; }
+.cook-ing { margin: 4px auto 14px; }
+.cook-ing summary { cursor: pointer; font-weight: 700; min-height: 44px; display: flex; align-items: center; }
+.cook-steps { display: flex; flex-direction: column; gap: 10px; }
+.cstep {
+  display: flex; gap: 14px; align-items: flex-start; width: 100%; text-align: left; min-height: 64px;
+  padding: 14px; font-size: 20px; line-height: 1.4; background: var(--surface); border: 1px solid var(--line); border-radius: 14px;
+}
+.cstep .num { flex: none; width: 32px; height: 32px; border-radius: 999px; background: var(--accent); color: #fff; font-size: 16px; font-weight: 700; display: flex; align-items: center; justify-content: center; margin-top: 1px; }
+.cstep.done { background: transparent; color: #6B726E; text-decoration: line-through; }
+.cstep.done .num { background: #6B726E; text-decoration: none; }
+
 /* ---------- print ---------- */
 .print-only { display: none; }
 @media print {
   body { background: #fff; }
-  #tabbar, .no-print, #toast, .overlay { display: none !important; }
+  #tabbar, .no-print, #toast, .overlay, .cook { display: none !important; }
   .print-only { display: block; }
   #view { max-width: none; margin: 0; padding: 0; }
   .hero { height: 0; margin: 0; }
