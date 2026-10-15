@@ -27,6 +27,7 @@
   var S = freshState();
   var ui = {
     shared: false,
+    clip: { status: 'idle', text: '', ignored: '', busy: false, stats: '' },
     installEvt: null,
     cookDone: {},
     search: '',
@@ -243,6 +244,43 @@
     return true;
   }
 
+  // One-tap paste: when a recipe-looking caption is on the clipboard, offer to use it.
+  function looksLikeRecipe(t) {
+    if (!t || t.length < 40 || /^https?:\/\/\S+$/.test(t)) return false;
+    var p = RV.parseCaption(t);
+    return p.ingredients.length >= 2 || (/\bingredients?\b/i.test(t) && t.length > 80);
+  }
+
+  function checkClipboard() {
+    if (!navigator.clipboard || !navigator.clipboard.readText) return;
+    if (ui.clip.status === 'denied' || ui.clip.busy) return;
+    ui.clip.busy = true;
+    navigator.clipboard.readText().then(function (raw) {
+      var t = (raw || '').trim();
+      var ignored = ui.clip.ignored;
+      if (t && t !== ignored && looksLikeRecipe(t)) {
+        var p = RV.parseCaption(t);
+        ui.clip = {
+          status: 'ready', text: t, ignored: ignored, busy: false,
+          stats: (p.title ? p.title + ' · ' : '') + p.ingredients.length + ' ingredients · ' + p.steps.length + ' steps'
+        };
+      } else {
+        ui.clip = { status: 'none', text: '', ignored: ignored, busy: false, stats: '' };
+      }
+      if (currentRoute() === 'add' && !ui.draft) render();
+    }, function () {
+      ui.clip.busy = false; ui.clip.status = 'denied';
+      if (currentRoute() === 'add' && !ui.draft) render();
+    });
+  }
+
+  function onReturn() {
+    if (document.visibilityState === 'hidden') return;
+    if (currentRoute() === 'add' && !ui.draft && ui.add.mode === 'paste' && !ui.add.text.trim()) checkClipboard();
+  }
+  document.addEventListener('visibilitychange', onReturn);
+  window.addEventListener('focus', onReturn);
+
   function isStandalone() {
     try { return window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true; } catch (e) { return false; }
   }
@@ -445,10 +483,18 @@
     var a = ui.add;
     var postUrl = safeUrl(a.url);
     var linkNote = (ui.shared && postUrl && !a.text.trim())
-      ? '<div class="notice"><b>Link received.</b> Instagram and Facebook only share the link, not the recipe. Tap Open post, copy the caption, come back and tap Paste caption and create.</div>'
+      ? '<div class="notice"><b>Link received.</b> Instagram and Facebook only share the link, not the recipe. Tap Open post and copy the caption. When you come back, the app offers to use it.</div>'
       : '<div class="notice">Copy the caption from the Instagram or Facebook post (or the recipe from the comments), then tap Paste caption and create.</div>';
+    var c = ui.clip, clipCard = '';
+    if (c.status === 'ready') {
+      clipCard = '<div class="card pad stack" style="border-color:var(--accent)">' +
+        '<div><b>Caption found on your clipboard</b><div class="small muted">' + esc(c.stats) + '</div></div>' +
+        '<pre class="clip-preview">' + esc(c.text.slice(0, 220)) + (c.text.length > 220 ? '…' : '') + '</pre>' +
+        '<div class="row"><button class="btn primary grow" style="min-height:52px" data-act="useClip">Create recipe from this</button>' +
+        '<button class="btn" style="min-height:52px" data-act="dismissClip">Not this</button></div></div>';
+    }
     var helper = a.mode === 'paste'
-      ? linkNote + '<div class="row wrap">' +
+      ? clipCard + (c.status === 'ready' ? '' : linkNote) + '<div class="row wrap">' +
         '<button class="btn primary grow" style="min-height:52px" data-act="pasteClip">Paste caption and create</button>' +
         (postUrl ? '<a class="btn grow" style="min-height:52px" href="' + esc(postUrl) + '" target="_blank" rel="noopener">Open post</a>' : '') + '</div>'
       :'<div class="card pad stack">' +
@@ -870,6 +916,15 @@
 
     addMode: function (el) { ui.add.mode = el.getAttribute('data-v'); render(); },
     useSample: function () { ui.add.text = SAMPLE_CAPTION; render(); },
+    useClip: function () {
+      ui.add.text = ui.clip.text;
+      ui.clip.ignored = ui.clip.text; ui.clip.status = 'none';
+      actions.parseText();
+    },
+    dismissClip: function () {
+      ui.clip.ignored = ui.clip.text; ui.clip.status = 'none'; ui.clip.text = '';
+      render();
+    },
     pasteClip: function () {
       if (!navigator.clipboard || !navigator.clipboard.readText) { toast('Long-press the box below and choose Paste'); return; }
       navigator.clipboard.readText().then(function (raw) {
@@ -1143,7 +1198,7 @@
     var shared = handleShare();
     if (!shared && (location.hash === '' || location.hash === '#')) location.hash = '#/';
     render();
-    if (shared) toast('Link received');
+    if (shared) { toast('Link received'); checkClipboard(); }
   });
 
   if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol)) {

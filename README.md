@@ -14,7 +14,10 @@ Your library is stored in the browser on each device (IndexedDB). Use Settings, 
 1. Open the app in Chrome, tap the ⋮ menu, choose **Install app** (or Add to Home screen). Settings in the app also has an install card.
 2. In Instagram or Facebook, tap **Share** on a recipe post and choose **Recipe Vault**. If it is not in the list yet, remove the home-screen icon and install again, so Android registers the share option.
 3. The app opens on the Add screen with the post link filled in (tracking junk removed).
-4. Tap **Open post**, copy the caption, come back, and tap **Paste caption and create**. That reads your clipboard, parses the recipe, and shows the review form.
+4. Tap **Open post** and copy the caption (long-press it in Instagram). When you switch back, the app notices a recipe on your clipboard and shows **Create recipe from this**. One tap and you get the review form. The first time, Chrome asks to allow clipboard access; choose Allow.
+5. Faster still: copy the caption *before* sharing. When the app opens from the Share menu it checks the clipboard straight away.
+
+If the offer does not appear (permission blocked, or the copied text does not look like a recipe), tap **Paste caption and create** instead. The app only looks at the clipboard on the Add screen and shows you what it found before using it.
 
 Instagram and Facebook share only the link, not the recipe text, which is why the caption step is still manual. Installing also makes the app work offline.
 
