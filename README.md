@@ -42,7 +42,7 @@ When the caption can't be copied, screenshot it instead:
 
 Dark mode screenshots work too. The text reader is Tesseract.js, downloaded from a CDN the first time, so the first run needs a connection. Expect a few seconds per screenshot. Always check amounts and spelling in the review form.
 
-You can also choose screenshots from inside the app: Add, Screenshot, Choose screenshots. This route needs them saved in the Gallery.
+If the Share menu doesn't list the app, use the in-app route: Add, then the Screenshot tab. The photo picker opens at once; pick your newest screenshots and they are read straight away. This route uses screenshots saved in the Gallery.
 
 After this update, remove the home-screen icon and install the app again so Android registers the new Share option for images.
 

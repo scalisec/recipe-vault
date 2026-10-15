@@ -602,10 +602,9 @@
         (postUrl ? '<a class="btn grow" style="min-height:52px" href="' + esc(postUrl) + '" target="_blank" rel="noopener">Open post</a>' : '') + '</div>'
       :'<div class="card pad stack">' +
         '<div><b>' + (a.reading ? 'Reading your screenshots' : 'Recipe from screenshots') + '</b></div>' +
-        (a.reading ? '' : '<div class="small muted">In Instagram, open the caption (tap more) and take a screenshot. Scroll and take another if it continues. On the screenshot preview tap Share, then Recipe Vault. Select several screenshots to share them together. You can also choose them here.</div>' +
+        (a.reading ? '' : '<div class="small muted">In Instagram, open the caption (tap more) and take a screenshot. Scroll and take another if it continues. On the screenshot preview tap Share, then Recipe Vault. Select several screenshots to share them together. Or pick them here: choose your newest screenshots and they are read straight away.</div>' +
         '<div class="row wrap"><label class="btn" style="cursor:pointer">Choose screenshots<input type="file" accept="image/*" multiple data-change="addPhoto" hidden></label>' +
-        (a.files.length ? '<button class="btn primary" data-act="runOCR">Read ' + a.files.length + ' screenshot' + (a.files.length === 1 ? '' : 's') + '</button>' : '') + '</div>') +
-        (a.thumbs.length ? '<div class="row wrap">' + a.thumbs.map(function (t) { return '<img alt="Selected screenshot" src="' + t + '" style="height:90px;border-radius:10px;object-fit:cover">'; }).join('') + '</div>' : '') +
+        '</div>') +
         '<div class="small muted" id="ocr-status" role="status">' + esc(a.ocr) + '</div></div>';
     return '<div class="page-head"><h1 class="display">Add recipe</h1><a class="icon-btn" href="#/" aria-label="Close">' + svg('x') + '</a></div>' +
       '<div class="seg"><button class="' + (a.mode === 'paste' ? 'on' : '') + '" data-act="addMode" data-v="paste">Paste text</button><button class="' + (a.mode === 'shot' ? 'on' : '') + '" data-act="addMode" data-v="shot">Screenshot</button></div>' +
@@ -1019,7 +1018,20 @@
     clearFilters: function () { ui.f = { groups: {}, maxTime: 0, fav: false, notCooked: false, sort: 'newest' }; ui.search = ''; closeSheet(); render(); },
     closeSheet: function () { closeSheet(); },
 
-    addMode: function (el) { ui.add.mode = el.getAttribute('data-v'); render(); },
+    addMode: function (el) {
+      var v = el.getAttribute('data-v');
+      ui.add.mode = v; render();
+      if (v === 'shot' && !ui.add.reading) actions.pickShots(); // the tap is the gesture that lets the picker open
+    },
+    pickShots: function () {
+      var inp = document.createElement('input');
+      inp.type = 'file'; inp.accept = 'image/*'; inp.multiple = true;
+      inp.onchange = function () {
+        var fs = Array.prototype.slice.call(inp.files || []);
+        if (fs.length) readShots(sortShots(fs));
+      };
+      inp.click();
+    },
     useSample: function () { ui.add.text = SAMPLE_CAPTION; render(); },
     useClip: function () {
       ui.add.text = ui.clip.text;
@@ -1060,7 +1072,6 @@
       });
       render(); window.scrollTo(0, 0);
     },
-    runOCR: function () { readShots(ui.add.files.slice()); },
     moreShots: function () {
       var inp = document.createElement('input');
       inp.type = 'file'; inp.accept = 'image/*'; inp.multiple = true;
@@ -1223,11 +1234,7 @@
   var changes = {
     addPhoto: function (el) {
       var fs = Array.prototype.slice.call(el.files || []);
-      if (!fs.length) return;
-      ui.add.files = sortShots(ui.add.files.concat(fs)); ui.add.thumbs = [];
-      Promise.all(ui.add.files.map(function (f) { return resizeImage(f, 200, 0.6).catch(function () { return ''; }); })).then(function (ds) {
-        ui.add.thumbs = ds.filter(Boolean); render();
-      });
+      if (fs.length) readShots(sortShots(fs));
     },
     draftPhoto: function (el) {
       var f = el.files && el.files[0]; if (!f) return;
