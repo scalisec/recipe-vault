@@ -36,6 +36,9 @@ def handler(route):
         route.fulfill(status=400, headers=cors, body=json.dumps({'error': {'message': 'Unsupported get request', 'code': 100}}))
     elif 'graph.facebook.com/instagram_oembed' in u:
         route.fulfill(status=200, headers=cors, body=json.dumps({'version': '1.0', 'html': '<blockquote><p>A post shared by X</p></blockquote>'}))
+    elif 'reel/AAA/embed/captioned' in u:
+        route.fulfill(status=200, headers={'access-control-allow-origin': '*', 'content-type': 'text/html'},
+                      body='<div class="Caption"><a class="CaptionUsername">creator</a>Pasta Night recipe, serves 2<br>Ingredients:<br>- 1 cup rice<br>- 2 tbsp oil</div>')
     else:
         route.abort()  # simulates a browser cross-origin block
 
@@ -65,6 +68,9 @@ with sync_playwright() as p:
     check('non-social link skipped', 'Not an Instagram or Facebook link' in txt)
     rep = page.input_value('#report')
     check('report lists links and verdicts', 'reel/AAA/' in rep and 'Caption found' in rep and 'parser: 3 ingredients, 2 steps' in rep, rep[:300])
+    check('embed page method shown and caption read', 'Instagram embed page' in txt and 'Pasta Night recipe' in txt, txt[:300])
+    check('raw reply is viewable', 'Raw reply (' in txt)
+    check('report includes raw html start', 'html start:' in rep and 'blockquote' in rep, rep[:200])
     check('copy enabled', page.is_enabled('#copy'))
     page.screenshot(path='/tmp/rv-shots/12-lab.png', full_page=True)
     check('no page errors', not errors, errors)

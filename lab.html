@@ -75,7 +75,8 @@
     if (/instagram\.com$/.test(host)) {
       return [
         { name: 'Instagram oEmbed', url: 'https://graph.facebook.com/instagram_oembed?omitscript=true&url=' + enc },
-        { name: 'Instagram oEmbed v23.0', url: 'https://graph.facebook.com/v23.0/instagram_oembed?omitscript=true&url=' + enc }
+        { name: 'Instagram oEmbed v23.0', url: 'https://graph.facebook.com/v23.0/instagram_oembed?omitscript=true&url=' + enc },
+        { name: 'Instagram embed page', url: url.replace(/\/?$/, '/') + 'embed/captioned/', page: true }
       ];
     }
     if (/facebook\.com$|fb\.watch$/.test(host)) {
@@ -114,6 +115,18 @@
       out.status = res.status;
       return res.text().then(function (txt) {
         out.raw = txt;
+        if (m.page) {
+          if (!res.ok) { out.error = 'HTTP ' + res.status; return out; }
+          out.html = txt;
+          var pdoc = new DOMParser().parseFromString(txt, 'text/html');
+          pdoc.querySelectorAll('br').forEach(function (b) { b.replaceWith('\n'); });
+          var cap = pdoc.querySelector('.Caption');
+          var user = cap && cap.querySelector('.CaptionUsername');
+          if (user) user.remove();
+          out.caption = (cap ? cap.textContent : '').trim();
+          out.keys = ['(web page, ' + txt.length + ' characters)'];
+          return out;
+        }
         var j = null;
         try { j = JSON.parse(txt); } catch (e) { /* not json */ }
         if (!res.ok) {
@@ -122,6 +135,7 @@
         }
         if (j) {
           out.keys = Object.keys(j);
+          out.html = typeof j.html === 'string' ? j.html : '';
           out.title = typeof j.title === 'string' ? j.title : '';
           out.author = typeof j.author_name === 'string' ? j.author_name : '';
           var fromHtml = captionFromHtml(typeof j.html === 'string' ? j.html : '');
@@ -163,6 +177,12 @@
       box.appendChild(line);
       if (r.error) box.appendChild(h('div', 'muted small', r.error));
       if (r.keys.length) box.appendChild(h('div', 'muted small', 'Fields returned: ' + r.keys.join(', ')));
+      if (r.html) {
+        var det = document.createElement('details');
+        det.appendChild(h('summary', 'small muted', 'Raw reply (' + r.html.length + ' characters)'));
+        det.appendChild(h('pre', '', r.html.slice(0, 1500)));
+        box.appendChild(det);
+      }
       if (r.caption && r.caption.length >= 30) {
         box.appendChild(h('pre', '', r.caption.slice(0, 1200)));
         if (!best || r.caption.length > best.caption.length) best = r;
@@ -189,6 +209,7 @@
         var v = verdict(r);
         lines.push('   - ' + r.name + ': ' + v[1] + (r.status ? ' [HTTP ' + r.status + ']' : '') + (r.error ? ' [' + r.error.slice(0, 160) + ']' : ''));
         if (r.keys.length) lines.push('     fields: ' + r.keys.join(', '));
+        if (r.html) lines.push('     html start: ' + r.html.replace(/\s+/g, ' ').slice(0, 600));
       });
       if (row.parsed) lines.push('   parser: ' + row.parsed.ingredients.length + ' ingredients, ' + row.parsed.steps.length + ' steps, title "' + row.parsed.title + '"');
       if (row.best) lines.push('   caption start: ' + row.best.caption.replace(/\s+/g, ' ').slice(0, 220));
