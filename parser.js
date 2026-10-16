@@ -233,7 +233,7 @@
         if (h[1] && h[1].length > 6) steps.push(stripStepNumber(h[1]));
         return;
       }
-      if (SUB_HEADER.test(plain) && mode === 'ing') return; // "For the sauce:"
+      if ((SUB_HEADER.test(plain) || /^[A-Z][A-Z &'\-]{3,40}$/.test(plain)) && mode === 'ing') return; // "For the sauce:", "CREAMY SAUCE"
       if (/^(?:serves|servings?|makes|yields?|prep|cook|total|time)\b/i.test(plain) && plain.length < 40) return;
 
       if (mode === 'ing') {
@@ -257,7 +257,7 @@
       notes.push(plain);
     });
 
-    title = (title || '').replace(/^[\s\-–—:|]+|[\s\-–—:|]+$/g, '');
+    title = (title || '').replace(/\s*[|•·,\-–—]?\s*\b(?:serves|servings?|makes|yields?|feeds)\b\s*:?\s*\d.*$/i, '').replace(/^[\s\-–—:|]+|[\s\-–—:|]+$/g, '');
     if (!title && notes.length) title = notes.shift();
     var description = notes.join(' ')
       .replace(/\b(?:serves|servings?|makes|yields?|feeds)\s*:?\s*\d{1,2}\b/gi, '')
@@ -562,26 +562,69 @@
     /^add (a )?comment.*$/i,
     /^view (all )?[\d,.]*[kKmM]?\s*comments?$/i,
     /^view (more )?replies.*$/i,
-    /^[\d,.]+\s?[kKmM]?\s+(likes?|views?|plays?|comments?|shares?|reposts?)$/i,
+    /^[\d,.]+\s?[kKmM]?\s+(likes?|views?|plays?|comments?|shares?|reposts?)\b.*$/i,
     /^liked by\b.*$/i,
     /^\d+\s*(s|m|h|d|w|min|mins|hrs?|hours?|days?|weeks?)(\s+ago)?$/i,
     /^[^A-Za-z0-9]{1,6}$/
   ];
-  var OCR_USER = /^@?([\w.]{2,30})\s*[•·.]?\s*(follow|following)$/i;
+  var OCR_USER = /^@?([\w.]+(?: [\w.]+)?)\s*[•·]?\s*(follow|following)$/i;
+
+  function userPrefixRe(u) {
+    var parts = u.replace(/\s+/g, '').split('').map(function (ch) { return ch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); });
+    return new RegExp('^' + parts.join('\\s?') + '\\s*', 'i');
+  }
+
+  var OCR_PROMO = /^(follow for more|follow me|follow us|save this|share this|tag (a|your) friend|link in bio|double tap|like (and|&) (share|follow)|comment\b.{0,20}\b(recipe|below))/i;
+  var OCR_DATE = /^(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+\d{1,2}(?:,?\s+\d{4})?$|^\d{1,2}\s+(?:days?|weeks?|hours?|minutes?)\s+ago$/i;
+  var OCR_STOP = ['and', 'the', 'for', 'you', 'with', 'not', 'are', 'can', 'all', 'any', 'but', 'or', 'of', 'to', 'in', 'on', 'at', 'by', 'up', 'as', 'an', 'if', 'so', 'no', 'is', 'it', 'be', 'do', 'go', 'my', 'we', 'me', 'he', 'us'];
 
   function cleanOcr(text) {
-    var user = '';
+    var user = '', userRe = null, seen = 0;
     var lines = String(text || '').replace(/\r/g, '').split('\n').map(function (l) { return l.replace(/\s+/g, ' ').trim(); });
-    // find the "username Follow" line first so the name can be stripped from the caption's first line
-    lines.forEach(function (l) { var m = l.match(OCR_USER); if (m && !user) user = m[1]; });
-    var out = [];
+    // Instagram's sheet puts the date under the caption and the comments after it: keep only what is above
+    var firstReal = 0, real = 0;
+    for (var k = 0; k < lines.length; k++) {
+      if (lines[k]) real++;
+      if (real >= 3 && OCR_DATE.test(lines[k])) { lines = lines.slice(0, k); break; }
+      firstReal = k;
+    }
+    // the "username  Follow" line lets us strip the name that Instagram prints in front of the caption
+    lines.forEach(function (l) {
+      if (!l) return;
+      seen++;
+      var m = l.match(OCR_USER);
+      if (m && !user && (/[._\d]/.test(m[1]) || seen <= 8)) { user = m[1]; userRe = userPrefixRe(user); }
+    });
+    var out = [], afterPromo = false;
     lines.forEach(function (l) {
       if (!l) { out.push(''); return; }
-      if (OCR_USER.test(l)) return;
+      var m = l.match(OCR_USER);
+      if (m && user && m[1] === user) return;
+      l = l.replace(/\*+/g, ' ').replace(/[™]/g, '').replace(/\s+/g, ' ').trim(); // **bold** markers
+      if (!l) return;
+      if (/^\d{1,2}:\d{2}\s.{0,25}$/.test(l)) return; // status bar
+      // emoji, bullets and keycap numbers come out as stray letters or symbols (e, o, ¢, @, fl, 8]): drop them
+      l = l.replace(/^[eo]\s+(?=[\p{N}A-Z])/u, '');
+      l = l.replace(/^[^\p{L}\p{N}\s#@(\["'$%]{1,3}\s+(?=\S)/u, '');
+      l = l.replace(/^[^\p{L}\p{N}\s#@(\["'$%]\s*(?=\S)/u, '');
+      l = l.replace(/^@\s+(?=[A-Z])/, '');
+      l = l.replace(/^(\d[\]\)}|!]|[a-z][a-zA-Z]{1,2})\s+(?=[A-Z][a-z]{2,})/, function (all, tok) {
+        return (/^[a-z]/.test(tok) && OCR_STOP.indexOf(tok) !== -1) ? all : '';
+      });
+      l = l.replace(/^1bs?\s+/, '1 lb ');
+      if (/^(#\S+\s*)+(\.{2,3}|…)?$/.test(l)) return; // hashtag line
       for (var i = 0; i < OCR_JUNK.length; i++) if (OCR_JUNK[i].test(l)) return;
-      if (user && l.toLowerCase().indexOf(user.toLowerCase() + ' ') === 0) l = l.slice(user.length + 1).trim();
+      if (OCR_PROMO.test(l)) { afterPromo = true; return; }
+      if (afterPromo) { afterPromo = false; if (/^[a-z]/.test(l)) return; } // the rest of a wrapped promo line
+      if (userRe) {
+        var rest = l.replace(userRe, '');
+        if (rest !== l) { l = rest.trim(); if (!l) return; }
+      }
       l = l.replace(/\s*(…|\.{2,3})\s*more$/i, '').trim();
-      l = l.replace(/\bIb(s?)\b/g, 'lb$1').replace(/(\d)\s*0z\b/g, '$1 oz');
+      if (l.length > 12) l = l.replace(/\s+[vV∨⌄˅>›»]$/, '');
+      l = l.replace(/(^|\s)(\d+(?:[./]\d+)?)\s*1bs?\b/g, '$1$2 lb').replace(/\bIb(s?)\b/g, 'lb$1').replace(/(\d)\s*0z\b/g, '$1 oz');
+      l = l.replace(/^(\d+(?:[./]\d+)?)(tsp|tbsp|cups?|oz|lbs?|kg|ml|g)\b/i, '$1 $2');
+      l = l.trim();
       if (l) out.push(l);
     });
     return out.join('\n').replace(/\n{3,}/g, '\n\n').trim();
@@ -622,7 +665,26 @@
       if (all.length && rest.length && all[all.length - 1].trim()) all.push('');
       all = all.concat(rest);
     });
-    return all.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+    return unwrapOcr(all).join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  }
+
+  // A caption wraps at the screen edge, so a step can arrive as several lines. Glue a line that starts in
+  // lower case onto the sentence before it (ingredient lines are left alone).
+  function unwrapOcr(lines) {
+    var res = [];
+    lines.forEach(function (l) {
+      if (!l || !l.trim()) { res.push(''); return; }
+      var p = res.length - 1;
+      while (p >= 0 && !res[p]) p--;
+      if (p >= 0 && /^[a-z]/.test(l) && !/[.!?:;]$/.test(res[p]) &&
+          (/^\d{1,2}[.)]\s/.test(res[p]) || (/^\d{1,2}\s+[A-Z][a-z]/.test(res[p]) && res[p].split(' ').length >= 6) || (!/^[\d\u00BC-\u00BE\u2150-\u215E]/.test(res[p]) && res[p].split(' ').length >= 6))) {
+        res[p] += ' ' + l.trim();
+        res.length = p + 1;
+        return;
+      }
+      res.push(l);
+    });
+    return res;
   }
 
   var RV = {

@@ -32,7 +32,7 @@
     cookDone: {},
     search: '',
     f: { groups: {}, maxTime: 0, fav: false, notCooked: false, sort: 'newest' },
-    add: { mode: 'paste', url: '', text: '', files: [], thumbs: [], reading: false, pending: 0, ocr: '' },
+    add: { mode: 'paste', url: '', text: '', files: [], thumbs: [], reading: false, pending: 0, ocr: '', raw: '' },
     draft: null,
     rs: { id: null, servings: 4, system: 'us' },
     week: mondayOf(new Date()),
@@ -339,8 +339,9 @@
     return ocrPromise;
   }
 
-  // Grayscale copy for the text reader; light text on a dark background is flipped so it reads like print.
-  function prepOcrImage(file) {
+  // Copy for the text reader. Light text on a dark background is flipped so it reads like print.
+  // With `binarize` (a cut-off), only the strongest contrast is kept (helps white text over a video or photo).
+  function prepOcrImage(file, binarize) {
     return new Promise(function (resolve, reject) {
       var img = new Image(), url = URL.createObjectURL(file);
       img.onload = function () {
@@ -351,9 +352,33 @@
         g.drawImage(img, 0, 0, c.width, c.height);
         URL.revokeObjectURL(url);
         try {
-          var d = g.getImageData(0, 0, c.width, c.height), px = d.data, sum = 0, n = 0, i;
-          for (i = 0; i < px.length; i += 4) { var y = 0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2]; px[i] = px[i + 1] = px[i + 2] = y; if ((i / 4) % 7 === 0) { sum += y; n++; } }
-          if (n && sum / n < 110) for (i = 0; i < px.length; i += 4) { px[i] = px[i + 1] = px[i + 2] = 255 - px[i]; }
+          var d = g.getImageData(0, 0, c.width, c.height), px = d.data, sum = 0, n = 0, i, hist = new Array(256).fill(0);
+          for (i = 0; i < px.length; i += 4) {
+            var y = Math.round(0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2]);
+            px[i] = px[i + 1] = px[i + 2] = y; hist[y]++;
+            if ((i / 4) % 7 === 0) { sum += y; n++; }
+          }
+          var mean = n ? sum / n : 255, dark = mean < 110, brightText = mean < 200; // white page: dark text; anything else: light text
+          if (binarize) {
+            // White text over a photo or video: keep only near-white pixels (`binarize` is the cut-off, 0-255).
+            // On a white page: Otsu finds the brightness that best separates dark text from the page.
+            var total = c.width * c.height, sumAll = 0, t, wB = 0, sumB = 0, best = -1, thr = 128;
+            for (t = 0; t < 256; t++) sumAll += t * hist[t];
+            for (t = 0; t < 256; t++) {
+              wB += hist[t]; if (!wB) continue;
+              var wF = total - wB; if (!wF) break;
+              sumB += t * hist[t];
+              var mB = sumB / wB, mF = (sumAll - sumB) / wF, v = wB * wF * (mB - mF) * (mB - mF);
+              if (v > best) { best = v; thr = t; }
+            }
+            if (brightText) thr = binarize;
+            for (i = 0; i < px.length; i += 4) {
+              var on = brightText ? px[i] > thr : px[i] <= thr; // text pixel?
+              px[i] = px[i + 1] = px[i + 2] = on ? 0 : 255;
+            }
+          } else if (dark) {
+            for (i = 0; i < px.length; i += 4) { px[i] = px[i + 1] = px[i + 2] = 255 - px[i]; }
+          }
           g.putImageData(d, 0, 0);
         } catch (e) { /* use the plain image */ }
         resolve(c);
@@ -396,6 +421,25 @@
     }).catch(function () { done([]); });
   }
 
+  // Keep only lines the reader is confident about (the photo above a caption comes out as low-confidence noise).
+  function readable(d) {
+    d = d || {};
+    var ls = d.lines;
+    if (!ls || !ls.length) return { text: d.text || '', q: d.confidence || 0, chars: (d.text || '').length };
+    var texty = function (t) { return (t.match(/[A-Za-z]{3,}/g) || []).length >= 2; };
+    var kept = ls.filter(function (l) { var c = l.confidence || 0; return c >= 62 || (c >= 45 && texty(l.text)); });
+    var chars = 0, wsum = 0;
+    kept.forEach(function (l) { var n = l.text.trim().length; chars += n; wsum += n * (l.confidence || 0); });
+    return { text: kept.map(function (l) { return l.text.replace(/\s+$/, ''); }).join('\n'), q: chars ? wsum / chars : 0, chars: chars };
+  }
+
+  // Quantities that look like a misread fraction (¼ often comes out as "4 Cup" or "%")
+  function suspectAmounts(ingText) {
+    return String(ingText || '').split('\n').filter(function (l) {
+      return /^%/.test(l.trim()) || /^\d+\s+(Cup|Tbsp|Tsp)\b/.test(l.trim()) || /^\d{2,}\s*(cups?|tbsp|tsp)\b/i.test(l.trim());
+    }).map(function (l) { return l.trim(); });
+  }
+
   // Read the text from one or more screenshots, stitch it together and open the review form.
   function readShots(files) {
     var a = ui.add;
@@ -405,7 +449,7 @@
     var idx = 0, total = files.length;
     render();
     setStatus('Loading the text reader…');
-    var worker = null, texts = [];
+    var worker = null, texts = [], raws = [];
     return loadOCR().then(function () {
       return window.Tesseract.createWorker('eng', 1, {
         logger: function (m) {
@@ -417,7 +461,26 @@
       return files.reduce(function (p, f, i) {
         return p.then(function () {
           idx = i; setStatus('Reading screenshot ' + (i + 1) + ' of ' + total + '…');
-          return prepOcrImage(f).then(function (img) { return worker.recognize(img); }).then(function (r) { texts.push(RV.cleanOcr((r.data && r.data.text) || '')); });
+          var best = null;
+          var better = function (x, y) { return y.chars * y.q > x.chars * x.q; };
+          var tryCut = function (cuts) {
+            if (!cuts.length || (best.q >= 75 && best.chars >= 60)) return Promise.resolve();
+            setStatus('Screenshot ' + (i + 1) + ' is hard to read, trying again…');
+            return prepOcrImage(f, cuts[0]).then(function (img2) { return worker.recognize(img2); }).then(function (r2) {
+              var c2 = readable(r2.data);
+              if (better(best, c2)) best = c2;
+              return tryCut(cuts.slice(1));
+            });
+          };
+          return prepOcrImage(f, 0).then(function (img) { return worker.recognize(img); }).then(function (r) {
+            best = readable(r.data);
+            return tryCut([240, 215, 250]);
+          }).then(function () {
+            raws.push((best && best.text) || '');
+            var cl = RV.cleanOcr((best && best.text) || '');
+            if (!texts.length && !a.text.trim()) cl = cl.replace(/^(?:[a-z][^\n]*\n+)+/, ''); // first line cut off by scrolling
+            texts.push(cl);
+          });
         });
       }, Promise.resolve());
     }).then(function () {
@@ -427,10 +490,15 @@
       a.reading = false; a.files = []; a.thumbs = [];
       if (!joined) { a.ocr = 'No text found in the screenshots. Try again with the caption fully open.'; render(); return; }
       a.text = joined; a.ocr = '';
+      a.raw = raws.map(function (t, k) { return '--- screenshot ' + (k + 1) + ' ---\n' + t.trim(); }).join('\n\n');
       actions.parseText();
       if (ui.draft) {
         ui.draft.fromShots = true;
-        ui.draft.warn = 'Read from ' + total + ' screenshot' + (total === 1 ? '' : 's') + '. Check the amounts and spelling before saving.' + (ui.draft.warn ? ' ' + ui.draft.warn : '');
+        var note = 'Read from ' + total + ' screenshot' + (total === 1 ? '' : 's') + '. Check the amounts and spelling before saving.';
+        if (ui.draft.title === 'Untitled recipe') { ui.draft.title = ''; note += ' The title was not in view: type one, or add a screenshot of the top of the caption.'; }
+        var sus = suspectAmounts(ui.draft.ingText);
+        if (sus.length) note += ' Fractions like ¼ are often misread. Check: ' + sus.join('; ') + '.';
+        ui.draft.warn = note + (ui.draft.warn ? ' ' + ui.draft.warn : '');
         render();
       }
     }).catch(function (e) {
@@ -658,7 +726,12 @@
   function viewDraftForm(title, editing) {
     var d = ui.draft;
     var warn = d.warn ? '<div class="notice warn">' + esc(d.warn) + '</div>' : '';
-    if (d.fromShots) warn += '<button class="btn small" style="align-self:flex-start" data-act="moreShots">Add more screenshots (rebuilds this form)</button>';
+    if (d.fromShots) {
+      warn += '<button class="btn small" style="align-self:flex-start" data-act="moreShots">Add more screenshots (rebuilds this form)</button>';
+      if (ui.add.raw) warn += '<details class="card pad"><summary class="small"><b>Text the reader saw</b></summary>' +
+        '<pre class="clip-preview" style="max-height:260px;overflow:auto;white-space:pre-wrap">' + esc(ui.add.raw) + '</pre>' +
+        '<button class="btn small" data-act="copyRaw">Copy this text</button></details>';
+    }
     return '<div class="page-head"><h1 class="display">' + esc(title) + '</h1><button class="icon-btn" aria-label="Cancel" data-act="cancelDraft">' + svg('x') + '</button></div>' +
       '<div class="stack">' + warn +
       '<div class="card pad stack">' +
@@ -703,7 +776,7 @@
     r.updatedAt = now();
     delete S.deleted[r.id];
     ui.draft = null;
-    ui.add = { mode: 'paste', url: '', text: '', files: [], thumbs: [], reading: false, pending: 0, ocr: '' };
+    ui.add = { mode: 'paste', url: '', text: '', files: [], thumbs: [], reading: false, pending: 0, ocr: '', raw: '' };
     save();
     toast('Saved');
     location.hash = '#/recipe/' + r.id;
@@ -1071,6 +1144,10 @@
         ingText: p.ingredients.map(function (i) { return i.raw; }).join('\n'), stepText: p.steps.join('\n'), tags: tags, notes: p.description || '', warn: warn
       });
       render(); window.scrollTo(0, 0);
+    },
+    copyRaw: function () {
+      var t = ui.add.raw || '';
+      if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(function () { toast('Copied'); }, function () { toast('Could not copy'); });
     },
     moreShots: function () {
       var inp = document.createElement('input');

@@ -209,5 +209,35 @@ t('joinOcr drops lines repeated where screenshots overlap', () => {
   assert.strictEqual(RV.joinOcr([a, 'Method\n1. Boil.']).split('\n').length, 8); // no overlap: kept whole, blank line between
 });
 
+t('real-engine dark screenshot text: bullets, username, wrapped steps', () => {
+  const raw = require('fs').readFileSync(__dirname + '/fixtures/r1.txt', 'utf8');
+  const p = RV.parseCaption(RV.joinOcr([RV.cleanOcr(raw)]));
+  assert.strictEqual(p.title, 'High Protein Chicken Burrito Bowls');
+  assert.strictEqual(p.servings, 4);
+  assert.strictEqual(p.ingredients.length, 6);
+  assert.strictEqual(p.ingredients[0].raw, '2 lbs chicken breast');
+  assert.strictEqual(p.ingredients[5].raw, 'Shredded cheese, to serve');
+  assert.strictEqual(p.steps.length, 3);
+  assert.ok(/^Season the chicken .* until golden\.$/.test(p.steps[0]), p.steps[0]);
+});
+
+t('"Serves 2" on the title line is not part of the title', () => {
+  assert.strictEqual(RV.parseCaption('Creamy Tuscan Salmon Serves 2\nIngredients\n2 salmon fillets').title, 'Creamy Tuscan Salmon');
+  assert.strictEqual(RV.parseCaption('Creamy Tuscan Salmon | Serves 2').servings, 2);
+});
+
+t('Instagram caption sheet: keycap numbers, ** headings, comments below the date', () => {
+  const raw = require('fs').readFileSync(__dirname + '/fixtures/u1.txt', 'utf8');
+  const p = RV.parseCaption(RV.joinOcr([RV.cleanOcr(raw)]));
+  assert.strictEqual(p.title, 'Untitled recipe'); // the title had scrolled out of view
+  const ing = p.ingredients.map(i => i.raw);
+  assert.strictEqual(ing.length, 9, ing.join(' / '));
+  assert.strictEqual(ing[0], '1 lb ground beef');
+  assert.ok(ing.indexOf('1 tsp sesame oil') !== -1 && !ing.some(x => /sauce\s*$/i.test(x) && /CREAMY/.test(x)));
+  assert.strictEqual(p.steps.length, 4, JSON.stringify(p.steps));
+  assert.strictEqual(p.steps[0], 'Brown the ground beef in a skillet until cooked through.');
+  assert.ok(!p.steps.join(' ').match(/Follow|SAVE|ground beef\s*$|think of this/), p.steps.join(' | '));
+});
+
 console.log(failed ? '\n' + failed + ' failed' : '\nall passed');
 process.exit(failed ? 1 : 0);

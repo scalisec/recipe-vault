@@ -31,7 +31,7 @@ window.Tesseract = { createWorker: async function (lang, oem, opts) {
       var n = window.__calls = (window.__calls || 0) + 1;
       var px = img.getContext('2d').getImageData(5, 300, 1, 1).data;
       (window.__bg = window.__bg || []).push(px[0]);
-      return { data: { text: window.__OCR[n - 1] || '' } };
+      return { data: { text: window.__OCR[n - 1] || '', confidence: 90 } };
     },
     terminate: async function () { window.__terminated = true; }
   };
@@ -93,6 +93,7 @@ with sync_playwright() as p:
     check('later screenshot contributes the method', 'Rest 5 minutes' in steps and 'Season the thighs' in steps, steps[:200])
     check('servings and time read', page.input_value('#d-serv') == '4' and page.input_value('#d-time') == '35', (page.input_value('#d-serv'), page.input_value('#d-time')))
     check('review note mentions 2 screenshots', 'Read from 2 screenshots' in view)
+    check('raw text panel offered', page.locator('details:has-text("Text the reader saw")').count() == 1 and 'Garlic Butter' in page.text_content('details'))
     check('add-more button offered', page.locator('[data-act=moreShots]').count() == 1)
     check('status bar and comment junk removed', 'LTE' not in view and 'likes' not in view and 'Add a comment' not in view)
     check('address bar clean', '?' not in page.url.split('#')[0], page.url)
