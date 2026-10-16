@@ -32,7 +32,7 @@
     cookDone: {},
     search: '',
     f: { groups: {}, maxTime: 0, fav: false, notCooked: false, sort: 'newest' },
-    add: { mode: 'paste', url: '', text: '', files: [], thumbs: [], reading: false, pending: 0, ocr: '', raw: '' },
+    add: { mode: 'paste', url: '', text: '', files: [], thumbs: [], reading: false, pending: 0, ocr: '', raw: '', photo: null },
     draft: null,
     rs: { id: null, servings: 4, system: 'us' },
     week: mondayOf(new Date()),
@@ -421,6 +421,90 @@
     }).catch(function () { done([]); });
   }
 
+  // Find the dish photo in a screenshot of an Instagram caption sheet (the video frame above the text) and crop it out.
+  // Works on a small copy: colourful pixels, joined up, largest blob. Returns a JPEG data URL, or null if no photo is in view.
+  function findDishPhoto(file) {
+    return new Promise(function (resolve) {
+      var img = new Image(), url = URL.createObjectURL(file);
+      img.onerror = function () { URL.revokeObjectURL(url); resolve(null); };
+      img.onload = function () {
+        try {
+          var W = 160, sc = W / img.width, H = Math.max(1, Math.round(img.height * sc));
+          var c = document.createElement('canvas'); c.width = W; c.height = H;
+          var g = c.getContext('2d', { willReadFrequently: true }); g.drawImage(img, 0, 0, W, H);
+          var px = g.getImageData(0, 0, W, H).data, N = W * H, m = new Uint8Array(N), i, x, y, limit = Math.round(H * 0.7);
+          for (i = 0; i < N; i++) {
+            var r = px[i * 4], gg = px[i * 4 + 1], b = px[i * 4 + 2];
+            m[i] = (Math.max(r, gg, b) - Math.min(r, gg, b) > 28 && Math.floor(i / W) < limit) ? 1 : 0;
+          }
+          // close small gaps (dark parts of the dish): dilate then erode with a 7x7 square
+          var box = function (src, grow) {
+            var out = new Uint8Array(N), R = 3, yy, xx, dy, dx, hit;
+            for (yy = 0; yy < H; yy++) for (xx = 0; xx < W; xx++) {
+              hit = grow ? 0 : 1;
+              for (dy = -R; dy <= R && (grow ? !hit : hit); dy++) for (dx = -R; dx <= R; dx++) {
+                var ny = yy + dy, nx = xx + dx, v = (ny < 0 || nx < 0 || ny >= H || nx >= W) ? 0 : src[ny * W + nx];
+                if (grow ? v : !v) { hit = grow ? 1 : 0; break; }
+              }
+              out[yy * W + xx] = hit;
+            }
+            return out;
+          };
+          m = box(box(m, true), false);
+          // largest connected blob
+          var seen = new Uint8Array(N), best = null, stack = new Int32Array(N);
+          for (i = 0; i < N; i++) {
+            if (!m[i] || seen[i]) continue;
+            var sp = 0, cnt = 0, x0 = W, x1 = 0, y0 = H, y1 = 0;
+            stack[sp++] = i; seen[i] = 1;
+            while (sp) {
+              var p = stack[--sp]; cnt++;
+              x = p % W; y = (p - x) / W;
+              if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+              if (x > 0 && m[p - 1] && !seen[p - 1]) { seen[p - 1] = 1; stack[sp++] = p - 1; }
+              if (x < W - 1 && m[p + 1] && !seen[p + 1]) { seen[p + 1] = 1; stack[sp++] = p + 1; }
+              if (y > 0 && m[p - W] && !seen[p - W]) { seen[p - W] = 1; stack[sp++] = p - W; }
+              if (y < H - 1 && m[p + W] && !seen[p + W]) { seen[p + W] = 1; stack[sp++] = p + W; }
+            }
+            if (!best || cnt > best.cnt) best = { cnt: cnt, x0: x0, x1: x1, y0: y0, y1: y1 };
+          }
+          if (!best) { URL.revokeObjectURL(url); resolve(null); return; }
+          // trim thin attachments (an avatar touching the frame): drop edge columns and rows that are mostly empty
+          var dens = function (vertical, k) {
+            var n = 0, t, len = vertical ? best.y1 - best.y0 + 1 : best.x1 - best.x0 + 1;
+            for (t = 0; t < len; t++) n += vertical ? m[(best.y0 + t) * W + k] : m[k * W + best.x0 + t];
+            return n / len;
+          };
+          while (best.x1 - best.x0 > 8 && dens(true, best.x0) < 0.4) best.x0++;
+          while (best.x1 - best.x0 > 8 && dens(true, best.x1) < 0.4) best.x1--;
+          while (best.y1 - best.y0 > 8 && dens(false, best.y0) < 0.4) best.y0++;
+          while (best.y1 - best.y0 > 8 && dens(false, best.y1) < 0.4) best.y1--;
+          var bw = best.x1 - best.x0 + 1, bh = best.y1 - best.y0 + 1, ar = bw / bh;
+          if (bw < W * 0.25 || bh < H * 0.1 || bh > H * 0.6 || ar < 0.35 || ar > 3 || (best.y0 + bh / 2) > H * 0.6) { URL.revokeObjectURL(url); resolve(null); return; }
+          // crop from the full-size image; skip the top strip where the account name sits over the video
+          var f = img.width / W;
+          var sx = (best.x0 + bw * 0.03) * f, sw = bw * 0.94 * f;
+          var sy = (best.y0 + bh * 0.14) * f, sh = bh * 0.82 * f;
+          var s2 = Math.min(1, 640 / Math.max(sw, sh));
+          var o = document.createElement('canvas'); o.width = Math.round(sw * s2); o.height = Math.round(sh * s2);
+          o.getContext('2d').drawImage(img, sx, sy, sw, sh, 0, 0, o.width, o.height);
+          URL.revokeObjectURL(url);
+          resolve(o.toDataURL('image/jpeg', 0.75));
+        } catch (e) { URL.revokeObjectURL(url); resolve(null); }
+      };
+      img.src = url;
+    });
+  }
+
+  function findPhotoInFiles(files) {
+    var i = 0;
+    var next = function () {
+      if (i >= files.length) return Promise.resolve(null);
+      return findDishPhoto(files[i++]).then(function (p) { return p || next(); });
+    };
+    return next();
+  }
+
   // Keep only lines the reader is confident about (the photo above a caption comes out as low-confidence noise).
   function readable(d) {
     d = d || {};
@@ -486,6 +570,10 @@
     }).then(function () {
       return worker.terminate();
     }).then(function () {
+      setStatus('Looking for the dish photo…');
+      return findPhotoInFiles(files);
+    }).then(function (photo) {
+      if (photo) a.photo = photo;
       var joined = RV.joinOcr((a.text.trim() ? [a.text] : []).concat(texts));
       a.reading = false; a.files = []; a.thumbs = [];
       if (!joined) { a.ocr = 'No text found in the screenshots. Try again with the caption fully open.'; render(); return; }
@@ -776,7 +864,7 @@
     r.updatedAt = now();
     delete S.deleted[r.id];
     ui.draft = null;
-    ui.add = { mode: 'paste', url: '', text: '', files: [], thumbs: [], reading: false, pending: 0, ocr: '', raw: '' };
+    ui.add = { mode: 'paste', url: '', text: '', files: [], thumbs: [], reading: false, pending: 0, ocr: '', raw: '', photo: null };
     save();
     toast('Saved');
     location.hash = '#/recipe/' + r.id;
@@ -1129,7 +1217,7 @@
         actions.parseText();
       }, function () { toast('Could not read the clipboard. Long-press the box below and choose Paste.'); });
     },
-    blankDraft: function () { ui.draft = newDraft({ source: RV.detectSource(ui.add.url), url: ui.add.url, thumb: null }); render(); },
+    blankDraft: function () { ui.draft = newDraft({ source: RV.detectSource(ui.add.url), url: ui.add.url, thumb: ui.add.photo || null }); render(); },
     parseText: function () {
       var a = ui.add;
       if (!a.text.trim()) { toast('Paste the recipe text first'); return; }
@@ -1140,7 +1228,7 @@
       else if (!p.ingredients.length) warn = 'No ingredients found. Add them below, one per line.';
       else if (!p.steps.length) warn = 'No steps found. Add them below if the post has them.';
       ui.draft = newDraft({
-        title: p.title, source: RV.detectSource(a.url), url: a.url.trim(), thumb: null, baseServings: p.servings || 4, time: p.time || '',
+        title: p.title, source: RV.detectSource(a.url), url: a.url.trim(), thumb: a.photo || null, baseServings: p.servings || 4, time: p.time || '',
         ingText: p.ingredients.map(function (i) { return i.raw; }).join('\n'), stepText: p.steps.join('\n'), tags: tags, notes: p.description || '', warn: warn
       });
       render(); window.scrollTo(0, 0);

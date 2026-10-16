@@ -38,7 +38,8 @@ When the caption can't be copied, screenshot it instead:
 1. In Instagram or Facebook, open the full caption (tap more) and take a screenshot. If the recipe continues, scroll and take another. A few overlapping screenshots are fine.
 2. On the screenshot preview that appears, tap **Share**, then **Recipe Vault**. You can select several screenshots in the Gallery and share them together. Nothing is saved to your Gallery, so there is nothing to delete afterwards.
 3. The app reads the text on your phone, drops the phone and Instagram interface text (clock, Follow, likes, comments), joins the screenshots in order without repeating the lines where they overlap, and opens the review form.
-4. Tap **Add more screenshots** in the review form if you missed a part. It rebuilds the form from the combined text.
+4. If the screenshot shows the dish photo above the caption (the video frame), the app crops it out and uses it as the recipe picture. If no photo is in view there is no picture; use **Add photo** in the review form.
+5. Tap **Add more screenshots** in the review form if you missed a part. It rebuilds the form from the combined text.
 
 Dark mode screenshots work too. The text reader is Tesseract.js, downloaded from a CDN the first time, so the first run needs a connection. Expect a few seconds per screenshot. Always check amounts and spelling in the review form.
 

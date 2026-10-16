@@ -103,6 +103,25 @@ with sync_playwright() as p:
     check('no page errors', not errors, errors)
     ctx.close()
 
+    # 1b. a caption sheet with the dish photo above: the photo is cropped out as the recipe picture
+    ctx, page, errors = new_page(b, [txt('s1')])
+    page.evaluate(POST_JS, {'files': [{'name': 'Screenshot_20261015-190000.png', 'b64': png_b64('p1')}], 'fields': {}})
+    page.wait_for_selector('#d-title', timeout=20000)
+    th = page.evaluate("(() => { const d = document.querySelector('#view div[style*=background-image]'); return d ? d.getAttribute('style') : null; })()")
+    check('dish photo cropped from the screenshot', bool(th) and 'data:image/jpeg' in th, (th or '')[:80])
+    dims = page.evaluate("""(() => new Promise(res => { const d = document.querySelector('#view div[style*=background-image]'); if (!d) return res(null);
+      const m = d.getAttribute('style').match(/url\\(['"]?(data:[^'")]+)/); if (!m) return res(null);
+      const i = new Image(); i.onload = () => res([i.naturalWidth, i.naturalHeight]); i.src = m[1]; }))()""")
+    check('crop is the photo only (not the avatar, text or dark margins)', dims and 440 < dims[0] < 540 and 480 < dims[1] < 600, dims)
+    ctx.close()
+
+    # 1c. no photo in view: no picture, recipe still created
+    ctx, page, errors = new_page(b, [txt('s1')])
+    page.evaluate(POST_JS, {'files': [{'name': 'Screenshot_20261015-190100.png', 'b64': png_b64('s1')}], 'fields': {}})
+    page.wait_for_selector('#d-title', timeout=20000)
+    check('no photo found, none invented', page.locator('#view div[style*=background-image]').count() == 0)
+    ctx.close()
+
     # 2. dark-mode screenshots are flipped before reading
     ctx, page, errors = new_page(b, [txt('d1'), txt('d2')])
     page.evaluate(POST_JS, {'files': [
